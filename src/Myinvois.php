@@ -73,9 +73,11 @@ class Myinvois
         return match ($key) {
             'client_id' => $this->settings['client_id'] ?? env('MYINVOIS_CLIENT_ID'),
             'client_secret' => $this->settings['client_secret'] ?? env('MYINVOIS_CLIENT_SECRET'),
-            'preprod' => is_bool($this->settings['preprod'])
-                ? $this->settings['preprod']
-                : !app()->environment('production'),
+            'private_key' => $this->settings['private_key'] ?? env('MYINVOIS_PRIVATE_KEY'),
+            'certificate' => $this->settings['certificate'] ?? env('MYINVOIS_CERTIFICATE'),
+            'preprod' => is_bool($this->settings['preprod']) ? $this->settings['preprod'] : (
+                is_bool(env('MYINVOIS_PREPROD')) ? env('MYINVOIS_PREPROD') : !app()->environment('production')
+            ),
             default => $this->settings[$key],
         };
     }
