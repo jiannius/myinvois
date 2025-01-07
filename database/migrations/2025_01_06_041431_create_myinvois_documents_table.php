@@ -20,7 +20,7 @@ return new class extends Migration
             $table->string('status')->nullable();
             $table->json('request')->nullable();
             $table->json('response')->nullable();
-            $table->datetime('last_query_at')->nullable();
+            $table->datetime('polled_at')->nullable();
             $table->timestamps();
         });
     }

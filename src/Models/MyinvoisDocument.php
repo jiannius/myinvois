@@ -14,6 +14,6 @@ class MyinvoisDocument extends Model
     protected $casts = [
         'request' => 'array',
         'response' => 'array',
-        'last_query_at' => 'datetime',
+        'polled_at' => 'datetime',
     ];
 }
