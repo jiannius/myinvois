@@ -9,7 +9,7 @@ class Code
         $codeType = (string) str($name)->snake()->slug();
         $needle = head($arguments);
         $codes = collect(self::getJson($codeType));
-        
+
         if ($needle) {
             $labelKey = match ($codeType) {
                 'document-types', 'document-versions', 'taxes', 'classifications', 'msic' => 'Description',

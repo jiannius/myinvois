@@ -58,6 +58,8 @@ class UBL
     {
         $supplier = data_get($data, 'supplier');
 
+        throw_if(!$supplier, \Exception::class, 'Missing supplier');
+
         data_set($schema, 'Invoice.0.AccountingSupplierParty.0.Party.0.PartyLegalEntity.0.RegistrationName.0._', data_get($supplier, 'name'));
 
         foreach (self::getDocumentTINSubschema($supplier) as $key => $val) {
@@ -97,6 +99,8 @@ class UBL
     {
         $buyer = data_get($data, 'buyer');
 
+        throw_if(!$buyer, \Exception::class, 'Missing buyer');
+
         data_set($schema, 'Invoice.0.AccountingCustomerParty.0.Party.0.PartyLegalEntity.0.RegistrationName.0._', data_get($buyer, 'name'));
 
         foreach (self::getDocumentTINSubschema($buyer) as $key => $val) {
@@ -133,6 +137,8 @@ class UBL
     public static function getDocumentReferencesSchema($schema, $data)
     {
         $refs = data_get($data, 'references');
+
+        if (!$refs) return $schema;
 
         foreach ($refs as $i => $ref) {
             if ($num = data_get($ref, 'reference')) {
