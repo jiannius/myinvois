@@ -22,7 +22,7 @@ class MyinvoisDocument extends Model
         'is_preprod' => 'boolean',
     ];
 
-    public function getPublicUrlAttribute() : string
+    public function getValidationLinkAttribute() : string
     {
         $longid = data_get($this->response, 'longId');
 
@@ -43,5 +43,30 @@ class MyinvoisDocument extends Model
             ->pluck('error')
             ->values()
             ->all();
+    }
+
+    public function isSubmittable() : bool
+    {
+        return in_array($this->status, [Status::INVALID, Status::CANCELLED]);
+    }
+
+    public function isSubmitted() : bool
+    {
+        return $this->status === Status::SUBMITTED;
+    }
+
+    public function isValid() : bool
+    {
+        return $this->status === Status::VALID;
+    }
+
+    public function isInvalid() : bool
+    {
+        return $this->status === Status::INVALID;
+    }
+
+    public function isCancellable() : bool
+    {
+        return $this->status === Status::VALID && $this->created_at->diffInHours(now()) < 72;
     }
 }

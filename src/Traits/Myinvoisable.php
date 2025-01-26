@@ -5,6 +5,7 @@ namespace Jiannius\Myinvois\Traits;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 trait Myinvoisable
 {
@@ -28,22 +29,47 @@ trait Myinvoisable
 
     public function isSubmittableToMyinvois($submittable = true) : bool
     {
-        if ($submittable) {
-            return !$this->myinvois_documents()->count()
-                || in_array($this->myinvois_documents()->latest()->first()->status, [Status::INVALID, Status::CANCELLED]);
-        }
-        else {
-            return !$this->isSubmittableToMyinvois();
-        }
+        return $submittable
+            ? !$this->myinvois_documents()->count() || $this->myinvois_documents()->latest()->first()->isSubmittable()
+            : !$this->isSubmittableToMyinvois();
     }
 
-    public function isSyncableWithMyinvois($syncable = true) : bool
+    public function isSubmittedToMyinvois($syncable = true) : bool
     {
-        if ($syncable) {
-            return optional($this->myinvois_documents()->latest()->first())->status === Status::SUBMITTED;
-        }
-        else {
-            return !$this->isSyncableWithMyinvois();
-        }
+        return $syncable
+            ? optional($this->myinvois_documents()->latest()->first())->isSubmitted()
+            : !$this->isSyncableWithMyinvois();
+    }
+
+    public function isCancellableFromMyinvois($cancellable = true) : bool
+    {
+        $last = $this->myinvois_documents()->latest()->first();
+
+        return $cancellable
+            ? $last?->isCancellable()
+            : !$this->isCancellableFromMyinvois();
+    }
+
+    public function isValidatedByMyinvois($validated = true) : bool
+    {
+        return $validated
+            ? optional($this->myinvois_documents()->latest()->first())->isValid()
+            : !$this->isValidatedByMyinvois();
+    }
+
+    public function getMyinvoisValidationLink() : string
+    {
+        return optional($this->myinvois_documents()->latest()->first())->validation_link;
+    }
+
+    public function getMyinvoisQrCode() : string
+    {
+        $url = $this->getMyinvoisValidationLink();
+
+        if (!$url) return '';
+
+        $qr = QrCode::size(256)->format('png')->generate($url);
+
+        return 'data:image/png;base64,'.base64_encode($qr);
     }
 }
