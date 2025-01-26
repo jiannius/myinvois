@@ -33,11 +33,15 @@ class Validator
         'subtotal' => 'required',
         'grand_total' => 'required',
         'payable_total' => 'required',
+        'taxes.*.code' => 'sometimes|required',
+        'taxes.*.name' => 'sometimes|required',
         'line_items' => 'required|array|min:1',
         'line_items.*.classifications' => 'required|array|min:1',
         'line_items.*.description' => 'required',
         'line_items.*.unit_price' => 'required',
         'line_items.*.subtotal' => 'required',
+        'line_items.*.taxes.*.code' => 'sometimes|required',
+        'line_items.*.taxes.*.name' => 'sometimes|required',
     ];
     
     public static $messages = [
@@ -70,6 +74,8 @@ class Validator
         'subtotal.required' => 'Subtotal is required',
         'grand_total.required' => 'Grand total is required',
         'payable_total.required' => 'Payable total is required',
+        'taxes.*.code.required' => 'Tax code is required.',
+        'taxes.*.name.required' => 'Tax name is required.',
         'line_items.required' => 'Line items is required',
         'line_items.array' => 'Line items is invalid',
         'line_items.min' => 'Should have minimum 1 line item',
@@ -79,6 +85,8 @@ class Validator
         'line_items.*.description.required' => 'Line item description is required',
         'line_items.*.unit_price.required' => 'Line item unit price is required',
         'line_items.*.subtotal.required' => 'Line item subtotal is required',
+        'line_items.*.taxes.*.code.required' => 'Line item tax code is required.',
+        'line_items.*.taxes.*.name' => 'Line item tax name is required.',
     ];
 
     public static function build($document)

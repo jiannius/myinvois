@@ -3,6 +3,7 @@
 namespace Jiannius\Myinvois\Traits;
 
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 
 trait Myinvoisable
@@ -12,21 +13,37 @@ trait Myinvoisable
         return $this->hasMany(MyinvoisDocument::class);
     }
 
-    public function scopeIsSubmittable($query, $submittable = true) : void
+    public function scopeIsSubmittableToMyinvois($query, $submittable = true) : void
     {
         if ($submittable) {
             $query->where(fn ($q) => $q
                 ->doesntHave('myinvois_documents')
-                ->orWhereHas('myinvois_documents', fn ($q) => $q->whereIn('status', ['invalid', 'cancelled']))
+                ->orWhereHas('myinvois_documents', fn ($q) => $q->whereIn('status', [Status::INVALID, Status::CANCELLED]))
             );
         }
         else {
-            $query->whereHas('myinvois_documents', fn ($q) => $q->whereIn('status', ['submitted', 'valid']));
+            $query->whereHas('myinvois_documents', fn ($q) => $q->whereIn('status', [Status::SUBMITTED, Status::VALID]));
         }
     }
 
-    public function isSubmittable() : bool
+    public function isSubmittableToMyinvois($submittable = true) : bool
     {
-        return in_array($this->status, ['invalid', 'cancelled']);
+        if ($submittable) {
+            return !$this->myinvois_documents()->count()
+                || in_array($this->myinvois_documents()->latest()->first()->status, [Status::INVALID, Status::CANCELLED]);
+        }
+        else {
+            return !$this->isSubmittableToMyinvois();
+        }
+    }
+
+    public function isSyncableWithMyinvois($syncable = true) : bool
+    {
+        if ($syncable) {
+            return optional($this->myinvois_documents()->latest()->first())->status === Status::SUBMITTED;
+        }
+        else {
+            return !$this->isSyncableWithMyinvois();
+        }
     }
 }

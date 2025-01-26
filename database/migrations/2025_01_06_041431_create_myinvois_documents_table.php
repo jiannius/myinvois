@@ -15,11 +15,12 @@ return new class extends Migration
         Schema::create('myinvois_documents', function (Blueprint $table) {
             $table->ulid('id')->primary();
             $table->string('document_uuid')->nullable();
-            $table->string('submissiong_uid')->nullable();
+            $table->string('submission_uid')->nullable();
             $table->string('document_number')->nullable();
             $table->string('status')->nullable();
             $table->json('request')->nullable();
             $table->json('response')->nullable();
+            $table->boolean('is_preprod')->nullable();
             $table->datetime('polled_at')->nullable();
             $table->timestamps();
         });

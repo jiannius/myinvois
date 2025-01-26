@@ -19,7 +19,7 @@ class UBL
         $schema = self::getDocumentChargesAndDiscountsSchema($schema, $data);
         $schema = self::getDocumentTotalsSchema($schema, $data);
         $schema = self::getDocumentLineItemsSchema($schema, $data);
-        
+
         return $schema;
     }
 
@@ -33,7 +33,7 @@ class UBL
         data_set($schema, 'Invoice.0.IssueTime.0._', data_get($data, 'issued_at')->format('H:i:sp'));
         data_set($schema, 'Invoice.0.InvoiceTypeCode.0._', data_get($data, 'document_type'));
         data_set($schema, 'Invoice.0.InvoiceTypeCode.0.listVersionID', data_get($data, 'document_version'));
-    
+
         return $schema;
     }
 
@@ -41,16 +41,16 @@ class UBL
     {
         $currency = data_get($data, 'currency');
         $rate = data_get($data, 'currency_rate');
-    
+
         data_set($schema, 'Invoice.0.DocumentCurrencyCode.0._', $currency);
         data_set($schema, 'Invoice.0.TaxCurrencyCode.0._', $currency);
-    
+
         if ($rate) {
             data_set($schema, 'Invoice.0.TaxExchangeRate.0.CalculationRate.0._', $rate);
             data_set($schema, 'Invoice.0.TaxExchangeRate.0.SourceCurrencyCode.0._', 'DocumentCurrencyCode');
             data_set($schema, 'Invoice.0.TaxExchangeRate.0.TargetCurrencyCode.0._', 'MYR');
         }
-    
+
         return $schema;
     }
 
@@ -286,7 +286,11 @@ class UBL
         foreach (data_get($data, 'line_items', []) as $i => $item) {
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.ID.0._', (string) str($i + 1)->padLeft(3, '0'));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.InvoicedQuantity.0._', data_get($item, 'qty'));
-            data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.InvoicedQuantity.0.unitCode', data_get($item, 'uom'));
+
+            if ($uom = data_get($item, 'uom')) {
+                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.InvoicedQuantity.0.unitCode', $uom);
+            }
+
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.Description.0._', data_get($item, 'description'));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Price.0.PriceAmount.0._', data_get($item, 'unit_price'));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Price.0.PriceAmount.0.currencyID', $currency);
@@ -379,7 +383,14 @@ class UBL
 
     public static function getDocumentTaxesSubschema($taxes, $currency)
     {
-        if (!$taxes) return [];
+        if (!$taxes) {
+            $taxes = [[
+                'code' => Code::taxes('Not Applicable'),
+                'name' => 'Not Applicable',
+                'amount' => 0,
+                'taxable_amount' => 0,
+            ]];
+        }
 
         $schema = collect();
         $total = collect($taxes)->sum('amount');
@@ -392,17 +403,17 @@ class UBL
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxScheme.0.ID.0._', 'OTH');
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxScheme.0.ID.0.schemeID', 'UN/ECE 5153');
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxScheme.0.ID.0.schemeAgencyID', '6');
-    
+
             if ($reason = data_get($tax, 'exemption_reason')) {
                 $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxExemptionReason.0._', $reason);
             }
-    
+
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxableAmount.0._', data_get($tax, 'taxable_amount') ?? 0);
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxableAmount.0.currencyID', $currency);
-    
+
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxAmount.0._', data_get($tax, 'amount') ?? 0);
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxAmount.0.currencyID', $currency);
-    
+
             if ($rate = data_get($tax, 'rate')) {
                 $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.Percent.0._', $rate);
             }

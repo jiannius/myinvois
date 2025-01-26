@@ -3,21 +3,16 @@
 namespace Jiannius\Myinvois;
 
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Jiannius\Myinvois\Helpers\Sample;
 use Jiannius\Myinvois\Helpers\Signature;
 use Jiannius\Myinvois\Helpers\UBL;
 use Jiannius\Myinvois\Helpers\Validator;
+use Jiannius\Myinvois\Models\MyinvoisDocument;
 
 class Myinvois
 {
-    public $settings = [
-        'client_id' => null,
-        'client_secret' => null,
-        'on_behalf_of' => null,
-        'private_key' => null,
-        'certificate' => null,
-        'preprod' => null,
-    ];
+    public $settings = [];
 
     public $baseUrl = [
         'prod' => 'https://myinvois.hasil.gov.my',
@@ -68,18 +63,20 @@ class Myinvois
         return $this;
     }
 
-    public function getSettings($key)
+    public function getSettings($key = null)
     {
-        return match ($key) {
-            'client_id' => $this->settings['client_id'] ?? env('MYINVOIS_CLIENT_ID'),
-            'client_secret' => $this->settings['client_secret'] ?? env('MYINVOIS_CLIENT_SECRET'),
-            'private_key' => $this->settings['private_key'] ?? env('MYINVOIS_PRIVATE_KEY'),
-            'certificate' => $this->settings['certificate'] ?? env('MYINVOIS_CERTIFICATE'),
-            'preprod' => is_bool($this->settings['preprod']) ? $this->settings['preprod'] : (
+        $settings = [
+            'client_id' => data_get($this->settings, 'client_id') ?? env('MYINVOIS_CLIENT_ID'),
+            'client_secret' => data_get($this->settings, 'client_secret') ?? env('MYINVOIS_CLIENT_SECRET'),
+            'on_behalf_of' => data_get($this->settings, 'on_behalf_of'),
+            'private_key' => data_get($this->settings, 'private_key') ?? env('MYINVOIS_PRIVATE_KEY'),
+            'certificate' => data_get($this->settings, 'certificate') ?? env('MYINVOIS_CERTIFICATE'),
+            'preprod' => is_bool(data_get($this->settings, 'preprod')) ? data_get($this->settings, 'preprod') : (
                 is_bool(env('MYINVOIS_PREPROD')) ? env('MYINVOIS_PREPROD') : !app()->environment('production')
             ),
-            default => $this->settings[$key],
-        };
+        ];
+
+        return $key ? data_get($settings, $key) : $settings;
     }
 
     public function getEndpoint($uri)
@@ -107,18 +104,20 @@ class Myinvois
 
         cache()->forget($cachekey);
 
-        $response = Http::withHeaders([
-            'onbehalfof' => $onBehalfOf,
-        ])->asForm()->post(
-            url: $this->getEndpoint('/connect/token'),
-            data: [
-                'client_id' => $clientId,
-                'client_secret' => $clientSecret,
-                'grant_type' => 'client_credentials',
-                'scope' => 'InvoicingAPI',
-            ],
-        );
+        $url = $this->getEndpoint('/connect/token');
 
+        $data = [
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
+            'grant_type' => 'client_credentials',
+            'scope' => 'InvoicingAPI',
+        ];
+
+        $http = $onBehalfOf
+            ? Http::withHeaders(['onbehalfof' => $onBehalfOf])->asForm()
+            : Http::asForm();
+
+        $response = $http->post(url: $url, data: $data);
         $response->throw();
 
         cache()->put($cachekey, [
@@ -210,6 +209,10 @@ class Myinvois
             uri: 'documents/'.$uid.'/details',
         );
 
+        if (Schema::hasTable('myinvois_documents')) {
+            $this->updateSubmittedDocument($api->json());
+        }
+
         return $api->json();
     }
 
@@ -254,6 +257,13 @@ class Myinvois
             ],
         );
 
+        if (Schema::hasTable('myinvois_documents')) {
+            return [
+                'documents' => $this->createSubmittedDocuments($api->json()),
+                'response' => $api->json(),
+            ];
+        }
+
         return $api->json();
     }
 
@@ -281,6 +291,41 @@ class Myinvois
         );
 
         return $api->json();
+    }
+
+    public function createSubmittedDocuments($response)
+    {
+        $submissionUid = data_get($response, 'submissionUid');
+        $accepted = data_get($response, 'acceptedDocuments');
+
+        return $accepted
+            ? collect($accepted)->map(fn ($data) => 
+                MyinvoisDocument::create([
+                    'document_uuid' => data_get($data, 'uuid'),
+                    'submission_uid' => $submissionUid,
+                    'document_number' => data_get($data, 'invoiceCodeNumber'),
+                    'status' => 'submitted',
+                    'is_preprod' => $this->getSettings('preprod'),
+                ])
+            )
+            : null;
+    }
+
+    public function updateSubmittedDocument($response)
+    {
+        $documentUuid = data_get($response, 'uuid');
+        $submissionUid = data_get($response, 'submissionUid');
+        $document = MyinvoisDocument::query()
+            ->where('document_uuid', $documentUuid)
+            ->where('submission_uid', $submissionUid)
+            ->first();
+
+        if (!$document) return;
+
+        $document->fill([
+            'status' => strtolower(data_get($response, 'status')),
+            'response' => $response,
+        ])->save();
     }
 
     public function validator($document)
