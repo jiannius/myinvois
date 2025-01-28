@@ -34,11 +34,11 @@ trait Myinvoisable
             : !$this->isSubmittableToMyinvois();
     }
 
-    public function isSubmittedToMyinvois($syncable = true) : bool
+    public function isSubmittedToMyinvois($submitted = true) : bool
     {
-        return $syncable
-            ? optional($this->myinvois_documents()->latest()->first())->isSubmitted()
-            : !$this->isSyncableWithMyinvois();
+        return $submitted
+            ? optional($this->myinvois_documents()->latest()->first())->isSubmitted() ?? false
+            : !$this->isSubmittedToMyinvois();
     }
 
     public function isCancellableFromMyinvois($cancellable = true) : bool
@@ -53,13 +53,13 @@ trait Myinvoisable
     public function isValidatedByMyinvois($validated = true) : bool
     {
         return $validated
-            ? optional($this->myinvois_documents()->latest()->first())->isValid()
+            ? optional($this->myinvois_documents()->latest()->first())->isValid() ?? false
             : !$this->isValidatedByMyinvois();
     }
 
     public function getMyinvoisValidationLink() : string
     {
-        return optional($this->myinvois_documents()->latest()->first())->validation_link;
+        return optional($this->myinvois_documents()->latest()->first())->validation_link ?? '';
     }
 
     public function getMyinvoisQrCode() : string
