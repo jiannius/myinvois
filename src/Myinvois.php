@@ -76,6 +76,10 @@ class Myinvois
             ),
         ];
 
+        if (data_get($settings, 'on_behalf_of') === env('MYINVOIS_CLIENT_TIN')) {
+            $settings['on_behalf_of'] = null;
+        }
+
         return $key ? data_get($settings, $key) : $settings;
     }
 
@@ -113,9 +117,8 @@ class Myinvois
             'scope' => 'InvoicingAPI',
         ];
 
-        $http = $onBehalfOf
-            ? Http::withHeaders(['onbehalfof' => $onBehalfOf])->asForm()
-            : Http::asForm();
+        $http = Http::asForm();
+        if ($onBehalfOf) $http->withHeaders(['onbehalfof' => $onBehalfOf]);
 
         $response = $http->post(url: $url, data: $data);
         $response->throw();
