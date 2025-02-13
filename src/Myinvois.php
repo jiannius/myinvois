@@ -274,11 +274,16 @@ class Myinvois
     {
         $api = $this->callApi(
             uri: 'documents/state/'.$uid.'/state',
+            method: 'PUT',
             data: [
                 'status' => 'cancelled',
                 'reason' => $reason,
             ],
         );
+
+        if (Schema::hasTable('myinvois_documents')) {
+            $this->updateSubmittedDocument([...$api->json(), 'reason' => $reason]);
+        }
 
         return $api->json();
     }
@@ -320,7 +325,8 @@ class Myinvois
         $submissionUid = data_get($response, 'submissionUid');
         $document = MyinvoisDocument::query()
             ->where('document_uuid', $documentUuid)
-            ->where('submission_uid', $submissionUid)
+            ->when($submissionUid, fn ($q) => $q->where('submission_uid', $submissionUid))
+            ->latest()
             ->first();
 
         if (!$document) return;

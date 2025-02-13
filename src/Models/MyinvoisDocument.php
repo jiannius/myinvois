@@ -65,6 +65,11 @@ class MyinvoisDocument extends Model
         return $this->status === Status::INVALID;
     }
 
+    public function isCancelled() : bool
+    {
+        return $this->status === Status::CANCELLED;
+    }
+
     public function isCancellable() : bool
     {
         return $this->status === Status::VALID && $this->created_at->diffInHours(now()) < 72;

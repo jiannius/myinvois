@@ -30,14 +30,14 @@ trait Myinvoisable
     public function isSubmittableToMyinvois($submittable = true) : bool
     {
         return $submittable
-            ? !$this->myinvois_documents()->count() || $this->myinvois_documents()->latest()->first()->isSubmittable()
+            ? (!$this->myinvois_documents()->count() || $this->myinvois_documents()->latest()->first()->isSubmittable())
             : !$this->isSubmittableToMyinvois();
     }
 
     public function isSubmittedToMyinvois($submitted = true) : bool
     {
         return $submitted
-            ? optional($this->myinvois_documents()->latest()->first())->isSubmitted() ?? false
+            ? (optional($this->myinvois_documents()->latest()->first())->isSubmitted() ?? false)
             : !$this->isSubmittedToMyinvois();
     }
 
@@ -46,14 +46,14 @@ trait Myinvoisable
         $last = $this->myinvois_documents()->latest()->first();
 
         return $cancellable
-            ? $last?->isCancellable()
+            ? ($last?->isCancellable() ?? false)
             : !$this->isCancellableFromMyinvois();
     }
 
     public function isValidatedByMyinvois($validated = true) : bool
     {
         return $validated
-            ? optional($this->myinvois_documents()->latest()->first())->isValid() ?? false
+            ? (optional($this->myinvois_documents()->latest()->first())->isValid() ?? false)
             : !$this->isValidatedByMyinvois();
     }
 
