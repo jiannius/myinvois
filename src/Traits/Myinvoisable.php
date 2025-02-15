@@ -14,57 +14,61 @@ trait Myinvoisable
         return $this->hasMany(MyinvoisDocument::class);
     }
 
-    public function scopeIsSubmittableToMyinvois($query, $submittable = true) : void
+    public function scopeIsSubmittableToMyinvois($query, $flag = true, $preprod = false) : void
     {
-        if ($submittable) {
+        if ($flag) {
             $query->where(fn ($q) => $q
-                ->doesntHave('myinvois_documents')
-                ->orWhereHas('myinvois_documents', fn ($q) => $q->whereIn('status', [Status::INVALID, Status::CANCELLED]))
+                ->whereDoesntHave('myinvois_documents', fn ($q) => $q->preprod($preprod))
+                ->orWhereHas('myinvois_documents', fn ($q) => $q->preprod($preprod)->whereIn('status', [Status::INVALID, Status::CANCELLED]))
             );
         }
         else {
-            $query->whereHas('myinvois_documents', fn ($q) => $q->whereIn('status', [Status::SUBMITTED, Status::VALID]));
+            $query->whereHas('myinvois_documents', fn ($q) => $q->preprod($preprod)->whereIn('status', [Status::SUBMITTED, Status::VALID]));
         }
     }
 
-    public function isSubmittableToMyinvois($submittable = true) : bool
+    public function getLastMyinvoisDocument($preprod = false)
     {
-        return $submittable
-            ? (!$this->myinvois_documents()->count() || $this->myinvois_documents()->latest()->first()->isSubmittable())
-            : !$this->isSubmittableToMyinvois();
+        return $this->myinvois_documents()->preprod($preprod)->latest()->first();
     }
 
-    public function isSubmittedToMyinvois($submitted = true) : bool
+    public function isSubmittableToMyinvois($flag = true, $preprod = false) : bool
     {
-        return $submitted
-            ? (optional($this->myinvois_documents()->latest()->first())->isSubmitted() ?? false)
-            : !$this->isSubmittedToMyinvois();
+        if (!$flag) return !$this->isSubmittableToMyinvois();
+
+        return !$this->myinvois_documents()->preprod($preprod)->count()
+            || $this->getLastMyinvoisDocument($preprod)->isSubmittable();
     }
 
-    public function isCancellableFromMyinvois($cancellable = true) : bool
+    public function isSubmittedToMyinvois($flag = true, $preprod = false) : bool
     {
-        $last = $this->myinvois_documents()->latest()->first();
+        if (!$flag) return !$this->isSubmittedToMyinvois();
 
-        return $cancellable
-            ? ($last?->isCancellable() ?? false)
-            : !$this->isCancellableFromMyinvois();
+        return $this->getLastMyinvoisDocument($preprod)?->isSubmitted() ?? false;
     }
 
-    public function isValidatedByMyinvois($validated = true) : bool
+    public function isCancellableFromMyinvois($flag = true, $preprod = false) : bool
     {
-        return $validated
-            ? (optional($this->myinvois_documents()->latest()->first())->isValid() ?? false)
-            : !$this->isValidatedByMyinvois();
+        if (!$flag) return !$this->isCancellableFromMyinvois();
+
+        return $this->getLastMyinvoisDocument($preprod)?->isCancellable() ?? false;
     }
 
-    public function getMyinvoisValidationLink() : string
+    public function isValidatedByMyinvois($flag = true, $preprod = false) : bool
     {
-        return optional($this->myinvois_documents()->latest()->first())->validation_link ?? '';
+        if (!$flag) return !$this->isValidatedByMyinvois();
+
+        return $this->getLastMyinvoisDocument($preprod)?->isValid() ?? false;
     }
 
-    public function getMyinvoisQrCode() : string
+    public function getMyinvoisValidationLink($preprod = false) : string
     {
-        $url = $this->getMyinvoisValidationLink();
+        return $this->getLastMyinvoisDocument($preprod)?->validation_link ?? '';
+    }
+
+    public function getMyinvoisQrCode($preprod = false) : string
+    {
+        $url = $this->getMyinvoisValidationLink($preprod);
 
         if (!$url) return '';
 

@@ -65,15 +65,25 @@ class Myinvois
 
     public function getSettings($key = null)
     {
+        $preprod = is_bool(data_get($this->settings, 'preprod')) ? data_get($this->settings, 'preprod') : (
+            is_bool(env('MYINVOIS_PREPROD')) ? env('MYINVOIS_PREPROD') : !app()->environment('production')
+        );
+
+        $clientId = data_get($this->settings, 'client_id') ?? (
+            $preprod ? (env('MYINVOIS_PREPROD_CLIENT_ID') ?? env('MYINVOIS_CLIENT_ID')) : env('MYINVOIS_CLIENT_ID')
+        );
+
+        $clientSecret = data_get($this->settings, 'client_secret') ?? (
+            $preprod ? (env('MYINVOIS_PREPROD_CLIENT_SECRET') ?? env('MYINVOIS_CLIENT_SECRET')) : env('MYINVOIS_CLIENT_SECRET')
+        );
+
         $settings = [
-            'client_id' => data_get($this->settings, 'client_id') ?? env('MYINVOIS_CLIENT_ID'),
-            'client_secret' => data_get($this->settings, 'client_secret') ?? env('MYINVOIS_CLIENT_SECRET'),
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
             'on_behalf_of' => data_get($this->settings, 'on_behalf_of'),
             'private_key' => data_get($this->settings, 'private_key') ?? env('MYINVOIS_PRIVATE_KEY'),
             'certificate' => data_get($this->settings, 'certificate') ?? env('MYINVOIS_CERTIFICATE'),
-            'preprod' => is_bool(data_get($this->settings, 'preprod')) ? data_get($this->settings, 'preprod') : (
-                is_bool(env('MYINVOIS_PREPROD')) ? env('MYINVOIS_PREPROD') : !app()->environment('production')
-            ),
+            'preprod' => $preprod,
         ];
 
         if (data_get($settings, 'on_behalf_of') === env('MYINVOIS_CLIENT_TIN')) {
@@ -121,6 +131,9 @@ class Myinvois
         if ($onBehalfOf) $http->withHeaders(['onbehalfof' => $onBehalfOf]);
 
         $response = $http->post(url: $url, data: $data);
+
+        if ($response->clientError()) abort($response->status(), 'MyInvois Portal Unauthorized');
+
         $response->throw();
 
         cache()->put($cachekey, [

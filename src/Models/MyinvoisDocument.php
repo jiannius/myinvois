@@ -33,6 +33,11 @@ class MyinvoisDocument extends Model
         return "{$baseurl}/{$this->document_uuid}/share/{$longid}";
     }
 
+    public function scopePreprod($query, $preprod = true) : void
+    {
+        $query->where('is_preprod', (bool) $preprod);
+    }
+
     public function getErrors()
     {
         return collect(data_get($this->response, 'validationResults.validationSteps'))
