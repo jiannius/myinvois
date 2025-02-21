@@ -38,6 +38,14 @@ class MyinvoisDocument extends Model
         $query->where('is_preprod', (bool) $preprod);
     }
 
+    public function scopeStatus($query, $status) : void
+    {
+        if (!$status) return;
+
+        if (is_array($status)) $query->whereIn('status', $status);
+        else $query->where('status', $status);
+    }
+
     public function getErrors()
     {
         return collect(data_get($this->response, 'validationResults.validationSteps'))
