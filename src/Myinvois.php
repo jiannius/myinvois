@@ -15,7 +15,7 @@ class Myinvois
     public $settings = [];
 
     public $baseUrl = [
-        'prod' => 'https://myinvois.hasil.gov.my',
+        'prod' => 'https://api.myinvois.hasil.gov.my',
         'preprod' => 'https://preprod-api.myinvois.hasil.gov.my',
     ];
 
