@@ -302,7 +302,9 @@ class UBL
             foreach (collect(data_get($item, 'classifications'))->concat(
                 collect(data_get($item, 'tariffs'))->map(fn ($tariff) => [...$tariff, 'is_tariff' => true])
             ) as $j => $classification) {
-                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0._', data_get($classification, 'code'));
+                $code = data_get($classification, 'code');
+                $code = is_numeric($code) ? $code : Code::classifications($code);
+                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0._', $code);
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0.listID', data_get($classification, 'is_tariff') ? 'PTC' : 'CLASS');
             }
 
@@ -355,8 +357,11 @@ class UBL
 
     public static function getDocumentContactSubschema($data)
     {
+        $phone = data_get($data, 'phone');
+        $phone = $phone ? (string) str($phone)->start('+')->replace(' ', '') : 'NA';
+
         return collect([
-            'Contact.0.Telephone.0._' => data_get($data, 'phone') ?? 'NA',
+            'Contact.0.Telephone.0._' => $phone,
             'Contact.0.ElectronicMail.0._' => data_get($data, 'email') ?? 'NA',
         ])->filter()->toArray();
     }
