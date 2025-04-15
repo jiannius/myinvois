@@ -34,6 +34,11 @@ class UBL
         data_set($schema, 'Invoice.0.InvoiceTypeCode.0._', data_get($data, 'document_type'));
         data_set($schema, 'Invoice.0.InvoiceTypeCode.0.listVersionID', data_get($data, 'document_version'));
 
+        if (data_get($data, 'original_number')) {
+            data_set($schema, 'Invoice.0.BillingReference.0.InvoiceDocumentReference.0.ID.0._', data_get($data, 'number'));
+            data_set($schema, 'Invoice.0.BillingReference.0.InvoiceDocumentReference.0.UUID.0._', data_get($data, 'original_number'));
+        }
+
         return $schema;
     }
 
