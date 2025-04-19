@@ -144,20 +144,52 @@ class Myinvois
         return $this->getToken();
     }
 
-    public function callApi($uri, $method = 'GET', $data = []) : mixed
+    public function callApi($uri, $method = 'GET', $data = [], $timeout = null) : mixed
     {
         $method = strtolower($method);
         $token = $this->getToken();
 
         if (!$token) abort(500, 'Missing MyInvois API access token');
 
-        $res = Http::withToken($token)->$method($this->getEndpoint($uri), $data);
+        // check the completion time for last job
+        // apply timeout if necessary to deal with rate limiting
+        $key = 'myinvois_last_job_'.(string) str($uri)->replace('/', '_');
+        $cache = cache($key);
+        $result = null;
 
-        if ($res->failed() && ($callback = $this->failedCallback)) {
-            return $callback($res);
+        while (!$result) {
+            if (
+                $cache
+                && ($lastJobAt = data_get($cache, 'completed_at'))
+                && ($lastJobTimeout = data_get($cache, 'timeout'))
+                && ($nextJobAt = $lastJobAt && $timeout ? $lastJobAt->addSeconds($lastJobTimeout) : null)
+                && $nextJobAt->gt(now())
+            ) {
+                sleep($nextJobAt->diffInSeconds(now()));
+            }
+            else {
+                $endpoint = $this->getEndpoint($uri);
+                $result = Http::withToken($token)->$method($endpoint, $data);
+
+                if ($result->failed() && ($callback = $this->failedCallback)) {
+                    $result = $callback($result);
+                }
+
+                if ($timeout) {
+                    cache([$key => [
+                        'endpoint' => $endpoint,
+                        'method' => $method,
+                        'completed_at' => now(),
+                        'timeout' => $timeout,
+                    ]]);
+                }
+                else {
+                    cache()->forget($key);
+                }
+            }
         }
 
-        return $res;
+        return $result;
     }
 
     public function searchTaxpayerTIN($idType = null, $idValue = null, $taxpayerName = null)
@@ -169,6 +201,7 @@ class Myinvois
                 'idValue' => $idValue,
                 'taxpayerName' => $taxpayerName,
             ],
+            timeout: 1,
         );
 
         return data_get($api->json(), 'tin');
@@ -192,6 +225,7 @@ class Myinvois
         $api = $this->callApi(
             uri: 'documents/recent',
             data: $data,
+            timeout: 5,
         );
 
         return $api->json();
@@ -205,6 +239,7 @@ class Myinvois
                 'pageNo' => $pageNo,
                 'pageSize' => $pageSize,
             ],
+            timeout: 1,
         );
 
         return $api->json();
@@ -214,6 +249,7 @@ class Myinvois
     {
         $api = $this->callApi(
             uri: 'documents/'.$uid.'/raw',
+            timeout: 1,
         );
 
         return $api->json();
@@ -223,6 +259,7 @@ class Myinvois
     {
         $api = $this->callApi(
             uri: 'documents/'.$uid.'/details',
+            timeout: 1,
         );
 
         if (Schema::hasTable('myinvois_documents')) {
@@ -237,6 +274,7 @@ class Myinvois
         $api = $this->callApi(
             uri: 'documents/search',
             data: $data,
+            timeout: 5,
         );
 
         return $api->json();
@@ -271,6 +309,7 @@ class Myinvois
                     ];
                 })->toArray(),
             ],
+            timeout: 1,
         );
 
         if (Schema::hasTable('myinvois_documents')) {
@@ -292,6 +331,7 @@ class Myinvois
                 'status' => 'cancelled',
                 'reason' => $reason,
             ],
+            timeout: 5,
         );
 
         if (Schema::hasTable('myinvois_documents')) {
@@ -309,6 +349,7 @@ class Myinvois
                 'status' => 'rejected',
                 'reason' => $reason,
             ],
+            timeout: 5,
         );
 
         return $api->json();
