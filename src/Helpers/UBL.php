@@ -437,4 +437,190 @@ class UBL
 
         return $schema;
     }
+
+    // accept ubl schema and restore to regular data
+    public static function restore($ubl)
+    {
+        $data['number'] = data_get($ubl, 'Invoice.0.ID.0._');
+        $data['original_number'] = data_get($ubl, 'Invoice.0.BillingReference.0.InvoiceDocumentReference.0.ID.0._');
+        $data['original_document_uuid'] = data_get($ubl, 'Invoice.0.BillingReference.0.InvoiceDocumentReference.0.UUID.0._');
+
+        $data['issued_at'] = new \Carbon\CarbonImmutable(collect([
+            data_get($ubl, 'Invoice.0.IssueDate.0._'),
+            data_get($ubl, 'Invoice.0.IssueTime.0._'),
+        ])->filter()->join('T'));
+
+        $data['document_type'] = Code::documentTypes(data_get($ubl, 'Invoice.0.InvoiceTypeCode.0._'));
+        $data['document_version'] = data_get($ubl, 'Invoice.0.InvoiceTypeCode.0.listVersionID');
+        $data['currency'] = data_get($ubl, 'Invoice.0.DocumentCurrencyCode.0._');
+        $data['currency_rate'] = data_get($ubl, 'Invoice.0.TaxExchangeRate.0.CalculationRate.0._');
+    
+        $data['supplier'] = [
+            'name' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PartyLegalEntity.0.RegistrationName.0._'),
+
+            ...collect(['TIN', 'NRIC', 'BRN', 'SST', 'TTX'])->mapWithKeys(fn ($field) => [
+                strtolower($field) => data_get(
+                    collect(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PartyIdentification'))
+                        ->filter(fn ($ublitem) => data_get($ublitem, 'ID.0.schemeID') === $field)
+                        ->first(),
+                    'ID.0._',
+                ),
+            ])->toArray(),
+
+            'email' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.Contact.0.ElectronicMail.0._'),
+            'phone' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.Contact.0.Telephone.0._'),
+            'bank_account_number' => data_get($ubl, 'Invoice.0.PaymentMeans.0.PayeeFinancialAccount.0.ID.0._'),
+            'address_line_1' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.AddressLine.0.Line.0._'),
+            'address_line_2' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.AddressLine.1.Line.0._'),
+            'address_line_3' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.AddressLine.2.Line.0._'),
+            'postcode' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.PostalZone.0._'),
+            'city' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.CityName.0._'),
+            'state' => Code::states(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.CountrySubentityCode.0._')),
+            'country' => Code::countries(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.Country.0.IdentificationCode.0._')),
+            'certex' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.AdditionalAccountID.0._'),
+            'msic_code' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.IndustryClassificationCode.0._'),
+            'msic_description' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.IndustryClassificationCode.0.name'),
+        ];
+
+        $data['buyer'] = [
+            'name' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PartyLegalEntity.0.RegistrationName.0._'),
+
+            ...collect(['TIN', 'NRIC', 'BRN', 'SST', 'TTX'])->mapWithKeys(fn ($field) => [
+                strtolower($field) => data_get(
+                    collect(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PartyIdentification'))
+                        ->filter(fn ($ublitem) => data_get($ublitem, 'ID.0.schemeID') === $field)
+                        ->first(),
+                    'ID.0._',
+                ),
+            ])->toArray(),
+
+            'email' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.Contact.0.ElectronicMail.0._'),
+            'phone' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.Contact.0.Telephone.0._'),
+            'address_line_1' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.AddressLine.0.Line.0._'),
+            'address_line_2' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.AddressLine.1.Line.0._'),
+            'address_line_3' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.AddressLine.2.Line.0._'),
+            'postcode' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.PostalZone.0._'),
+            'city' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.CityName.0._'),
+            'state' => Code::states(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.CountrySubentityCode.0._')),
+            'country' => Code::countries(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.Country.0.IdentificationCode.0._')),
+            'msic_code' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.IndustryClassificationCode.0._'),
+            'msic_description' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.IndustryClassificationCode.0.name'),
+        ];   
+
+        $data['billing'] = [
+            'start_at' => data_get($ubl, 'Invoice.0.InvoicePeriod.0.StartDate.0._'),
+            'end_at' => data_get($ubl, 'Invoice.0.InvoicePeriod.0.EndDate.0._'),
+            'frequency' => data_get($ubl, 'Invoice.0.InvoicePeriod.0.Description.0._'),
+            'reference' => data_get($ubl, 'Invoice.0.BillingReference.0.AdditionalDocumentReference.0.ID.0._'),
+        ];
+        
+        $data['references'] = collect(data_get($ubl, 'Invoice.0.AdditionalDocumentReference'))
+            ->map(fn ($item) => [
+                'reference' => data_get($item, 'ID.0._'),
+                'type' => data_get($item, 'DocumentType.0._'),
+                'description' => data_get($item, 'DocumentDescription.0._'),
+            ])
+            ->toArray();
+
+
+        $data['payment_mode'] = data_get($ubl, 'Invoice.0.PaymentMeans.0.PaymentMeansCode.0._');
+        if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes($data['payment_modes']);
+
+        $data['payment_term'] = data_get($ubl, 'Invoice.0.PaymentTerms.0.Note.0._');
+            
+        $data['prepaid'] = [
+            'amount' => data_get($ubl, 'Invoice.0.PrepaidPayment.0.PaidAmount.0._'),
+
+            'paid_at' => collect([
+                data_get($ubl, 'Invoice.0.PrepaidPayment.0.PaidDate.0._'),
+                data_get($ubl, 'Invoice.0.PrepaidPayment.0.PaidTime.0._'),
+            ])->filter()->join('T'),
+
+            'reference' => data_get($ubl, 'Invoice.0.PrepaidPayment.0.ID.0._'),
+        ];
+
+        $data['charges'] = collect(data_get($ubl, 'Invoice.0.AllowanceCharge'))
+            ->filter(fn ($item) => data_get($item, 'ChargeIndicator.0._'))
+            ->values()
+            ->map(fn ($item) => [
+                'amount' => data_get($item, 'Amount.0._'),
+                'description' => data_get($item, 'AllowanceChargeReason.0._'),
+            ])
+            ->toArray();
+
+        $data['discounts'] = collect(data_get($ubl, 'Invoice.0.AllowanceCharge'))
+            ->filter(fn ($item) => !data_get($item, 'ChargeIndicator.0._'))
+            ->values()
+            ->map(fn ($item) => [
+                'amount' => data_get($item, 'Amount.0._'),
+                'description' => data_get($item, 'AllowanceChargeReason.0._'),
+            ])
+            ->toArray();
+
+        $data['taxes'] = collect(data_get($ubl, 'Invoice.0.TaxTotal.0.TaxSubtotal'))
+            ->map(function ($tax) {
+                $code = data_get($tax, 'TaxCategory.0.ID.0._');
+                $name = $code ? Code::taxes($code) : null;
+
+                return [
+                    'code' => $code,
+                    'name' => $name,
+                    'taxable_amount' => data_get($tax, 'TaxableAmount.0._'),
+                    'amount' => data_get($tax, 'TaxAmount.0._'),
+                    'rate' => data_get($tax, 'Percent.0._'),
+                    'fixed_rate_base_unit_measure' => data_get($tax, 'BaseUnitMeasure.0._'),
+                    'fixed_rate_base_unit_measure_code' => data_get($tax, 'BaseUnitMeasure.0.unitCode'),
+                    'fixed_rate_per_unit_amount' => data_get($tax, 'PerUnitAmount.0._'),
+                    'exemption_reason' => data_get($tax, 'TaxCategory.0.TaxExemptionReason.0._'),
+                ];
+            })
+            ->toArray();
+
+        $data['subtotal'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.TaxExclusiveAmount.0._');
+        $data['grand_total'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.TaxInclusiveAmount.0._');
+        $data['payable_total'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableAmount.0._');
+
+        $data['line_items'] = collect(data_get($ubl, 'Invoice.0.InvoiceLine'))
+            ->map(fn ($item) => [
+                'qty' => data_get($item, 'InvoicedQuantity.0._'),
+                'uom' => data_get($item, 'InvoicedQuantity.0.unitCode'),
+                'description' => data_get($item, 'Item.0.Description.0._'),
+                'unit_price' => data_get($item, 'Price.0.PriceAmount.0._'),
+                'country' => data_get($item, 'Item.0.OriginCountry.0.IdentificationCode.0._'),
+
+                'classifications' => collect(data_get($item, 'Item.0.CommodityClassification.0.ItemClassificationCode'))
+                    ->map(fn ($val) => ['code' => data_get($val, '_')])
+                    ->toArray(),
+
+                'taxes' => collect(data_get($item, 'TaxTotal.0.TaxSubtotal'))
+                    ->map(function ($tax) {
+                        $code = data_get($tax, 'TaxCategory.0.ID.0._');
+                        $name = $code ? Code::taxes($code) : null;
+
+                        return [
+                            'code' => $code,
+                            'name' => $name,
+                            'taxable_amount' => data_get($tax, 'TaxableAmount.0._'),
+                            'amount' => data_get($tax, 'TaxAmount.0._'),
+                            'rate' => data_get($tax, 'Percent.0._'),
+                            'fixed_rate_base_unit_measure' => data_get($tax, 'BaseUnitMeasure.0._'),
+                            'fixed_rate_base_unit_measure_code' => data_get($tax, 'BaseUnitMeasure.0.unitCode'),
+                            'fixed_rate_per_unit_amount' => data_get($tax, 'PerUnitAmount.0._'),
+                            'exemption_reason' => data_get($tax, 'TaxCategory.0.TaxExemptionReason.0._'),
+                        ];
+                    })
+                    ->toArray(),
+
+                'subtotal' => data_get($item, 'ItemPriceExtension.0.Amount.0._'),
+
+                'discount' => [
+                    'amount' => data_get($item, 'AllowanceCharge.0.Amount.0._'),
+                    'description' => data_get($item, 'AllowanceCharge.0.AllowanceChargeReason.0._'),
+                    'rate' => data_get($item, 'AllowanceCharge.0.MultiplierFactorNumeric.0._'),
+                ],
+            ])
+            ->toArray();
+
+        return $data;
+    }
 }

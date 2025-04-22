@@ -9,7 +9,7 @@ use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 trait Myinvoisable
 {
-    public function myinvois_documents() : HasMany
+    public function myinvoisDocuments() : HasMany
     {
         return $this->hasMany(MyinvoisDocument::class);
     }
@@ -18,45 +18,45 @@ trait Myinvoisable
     {
         if ($flag) {
             $query->where(fn ($q) => $q
-                ->whereDoesntHave('myinvois_documents', fn ($q) => $q->preprod($preprod))
-                ->orWhereHas('myinvois_documents', fn ($q) => $q->preprod($preprod)->status([Status::INVALID, Status::CANCELLED]))
+                ->whereDoesntHave('myinvoisDocuments', fn ($q) => $q->preprod($preprod))
+                ->orWhereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status([Status::INVALID, Status::CANCELLED]))
             );
         }
         else {
-            $query->whereHas('myinvois_documents', fn ($q) => $q->preprod($preprod)->status([Status::SUBMITTED, Status::VALID]));
+            $query->whereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status([Status::SUBMITTED, Status::VALID]));
         }
     }
 
     public function scopeSubmittedToMyinvois($query, $flag = true, $preprod = false) : void
     {
         if ($flag) {
-            $query->whereHas('myinvois_documents', fn ($q) => $q->preprod($preprod)->status(Status::SUBMITTED));
+            $query->whereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::SUBMITTED));
         }
         else {
-            $query->whereDoesntHave('myinvois_documents', fn ($q) => $q->preprod($preprod)->status(Status::SUBMITTED));
+            $query->whereDoesntHave('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::SUBMITTED));
         }
     }
 
     public function scopeValidatedByMyinvois($query, $flag = true, $preprod = false) : void
     {
         if ($flag) {
-            $query->whereHas('myinvois_documents', fn ($q) => $q->preprod($preprod)->status(Status::VALID));
+            $query->whereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::VALID));
         }
         else {
-            $query->whereDoesntHave('myinvois_documents', fn ($q) => $q->preprod($preprod)->status(Status::VALID));
+            $query->whereDoesntHave('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::VALID));
         }
     }
 
     public function getLastMyinvoisDocument($preprod = false)
     {
-        return $this->myinvois_documents()->preprod($preprod)->latest()->first();
+        return $this->myinvoisDocuments()->preprod($preprod)->latest()->first();
     }
 
     public function isSubmittableToMyinvois($flag = true, $preprod = false) : bool
     {
         if (!$flag) return !$this->isSubmittableToMyinvois();
 
-        return !$this->myinvois_documents()->preprod($preprod)->count()
+        return !$this->myinvoisDocuments()->preprod($preprod)->count()
             || $this->getLastMyinvoisDocument($preprod)->isSubmittable();
     }
 
