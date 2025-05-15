@@ -28,6 +28,9 @@ class Code
             return data_get($codes->first(fn ($item) => strtoupper($item[$labelKey]) === strtoupper($needle)), $valueKey)
                 ?? data_get($codes->first(fn ($item) => strtoupper($item[$valueKey]) === strtoupper($needle)), $labelKey);
         }
+        else if ($arguments) {
+            return;
+        }
 
         return $codes;
     }

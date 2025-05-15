@@ -25,12 +25,15 @@ class UBL
 
     public static function getDocumentEssentialSchema($schema, $data)
     {
+        $date = data_get($data, 'issued_at');
+        $date = is_string($date) ? new \Carbon\Carbon($date) : $date;
+
         data_set($schema, '_D', 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2');
         data_set($schema, '_A', 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2');
         data_set($schema, '_B', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
         data_set($schema, 'Invoice.0.ID.0._', data_get($data, 'number'));
-        data_set($schema, 'Invoice.0.IssueDate.0._', data_get($data, 'issued_at')->toDateString());
-        data_set($schema, 'Invoice.0.IssueTime.0._', data_get($data, 'issued_at')->format('H:i:sp'));
+        data_set($schema, 'Invoice.0.IssueDate.0._', $date?->toDateString());
+        data_set($schema, 'Invoice.0.IssueTime.0._', $date?->format('H:i:sp'));
         data_set($schema, 'Invoice.0.InvoiceTypeCode.0._', data_get($data, 'document_type'));
         data_set($schema, 'Invoice.0.InvoiceTypeCode.0.listVersionID', data_get($data, 'document_version'));
 
@@ -127,9 +130,15 @@ class UBL
     {
         $billing = data_get($data, 'billing');
 
+        $start = data_get($billing, 'start_at');
+        $start = is_string($start) ? new \Carbon\Carbon($start) : $start;
+
+        $end = data_get($billing, 'end_at');
+        $end = is_string($end) ? new \Carbon\Carbon($end) : $end;
+
         foreach(collect([
-            'Invoice.0.InvoicePeriod.0.StartDate.0._' => optional(data_get($billing, 'start_at'))->toDateString(),
-            'Invoice.0.InvoicePeriod.0.EndDate.0._' => optional(data_get($billing, 'end_at'))->toDateString(),
+            'Invoice.0.InvoicePeriod.0.StartDate.0._' => $start?->toDateString(),
+            'Invoice.0.InvoicePeriod.0.EndDate.0._' => $end?->toDateString(),
             'Invoice.0.InvoicePeriod.0.Description.0._' => data_get($billing, 'frequency'), // Daily, Weekly, Biweekly, Monthly, Bimonthly, Quarterly, Half-yearly, Yearly, Others / Not Applicable
             'Invoice.0.BillingReference.0.AdditionalDocumentReference.0.ID.0._' => data_get($billing, 'reference'),
         ])->filter() as $key => $val) {
@@ -215,6 +224,7 @@ class UBL
         }
 
         if ($dt = data_get($prepaid, 'paid_at')) {
+            $dt = is_string($dt) ? new \Carbon\Carbon($dt) : $dt;
             data_set($schema, 'Invoice.0.PrepaidPayment.0.PaidDate.0._', $dt->toDateString());
             data_set($schema, 'Invoice.0.PrepaidPayment.0.PaidTime.0._', $dt->format('H:i:sp'));
         }
@@ -363,27 +373,27 @@ class UBL
     public static function getDocumentContactSubschema($data)
     {
         $phone = data_get($data, 'phone');
-        $phone = $phone ? (string) str($phone)->start('+')->replace(' ', '') : 'NA';
+        $phone = $phone ? (string) str($phone)->start('+')->replace(' ', '') : '';
 
         return collect([
             'Contact.0.Telephone.0._' => $phone,
-            'Contact.0.ElectronicMail.0._' => data_get($data, 'email') ?? 'NA',
+            'Contact.0.ElectronicMail.0._' => data_get($data, 'email') ?? '',
         ])->filter()->toArray();
     }
 
     public static function getDocumentAddressSubschema($data)
     {
         $schema = collect([
-            'PostalAddress.0.AddressLine.0.Line.0._' => data_get($data, 'address_line_1'),
-            'PostalAddress.0.AddressLine.1.Line.0._' => data_get($data, 'address_line_2'),
-            'PostalAddress.0.AddressLine.2.Line.0._' => data_get($data, 'address_line_3'),
-            'PostalAddress.0.CityName.0._' => data_get($data, 'city'),
-            'PostalAddress.0.PostalZone.0._' => data_get($data, 'postcode'),
-            'PostalAddress.0.CountrySubentityCode.0._' => Code::states(data_get($data, 'state')),
+            'PostalAddress.0.AddressLine.0.Line.0._' => data_get($data, 'address_line_1') ?? 'NA',
+            'PostalAddress.0.AddressLine.1.Line.0._' => data_get($data, 'address_line_2') ?? '',
+            'PostalAddress.0.AddressLine.2.Line.0._' => data_get($data, 'address_line_3') ?? '',
+            'PostalAddress.0.CityName.0._' => data_get($data, 'city') ?? '',
+            'PostalAddress.0.PostalZone.0._' => data_get($data, 'postcode') ?? '',
+            'PostalAddress.0.CountrySubentityCode.0._' => Code::states(data_get($data, 'state')) ?? '',
         ])->filter();
 
-        if ($country = data_get($data, 'country')) {
-            $schema->put('PostalAddress.0.Country.0.IdentificationCode.0._', Code::countries($country));
+        if ($country = Code::countries(data_get($data, 'country'))) {
+            $schema->put('PostalAddress.0.Country.0.IdentificationCode.0._', $country);
             $schema->put('PostalAddress.0.Country.0.IdentificationCode.0.listID', 'ISO3166-1');
             $schema->put('PostalAddress.0.Country.0.IdentificationCode.0.listAgencyID', '6');
         }

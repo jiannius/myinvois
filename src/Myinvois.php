@@ -242,6 +242,10 @@ class Myinvois
             timeout: 1,
         );
 
+        foreach (data_get($api->json(), 'documentSummary') ?? [] as $response) {
+            $this->updateMyinvoisDocuments($response);
+        }
+
         return $api->json();
     }
 
@@ -262,9 +266,7 @@ class Myinvois
             timeout: 1,
         );
 
-        if (Schema::hasTable('myinvois_documents')) {
-            $this->updateSubmittedDocument($api->json());
-        }
+        $this->updateMyinvoisDocuments($api->json());
 
         return $api->json();
     }
@@ -312,9 +314,9 @@ class Myinvois
             timeout: 1,
         );
 
-        if (Schema::hasTable('myinvois_documents')) {
+        if ($myinvoisDocuments = $this->createMyinvoisDocuments($api->json(), $documents)) {
             return [
-                'documents' => $this->createSubmittedDocuments($api->json()),
+                'myinvois_documents' => $myinvoisDocuments,
                 'response' => $api->json(),
             ];
         }
@@ -334,9 +336,7 @@ class Myinvois
             timeout: 5,
         );
 
-        if (Schema::hasTable('myinvois_documents')) {
-            $this->updateSubmittedDocument([...$api->json(), 'reason' => $reason]);
-        }
+        $this->updateMyinvoisDocuments([...$api->json(), 'reason' => $reason]);
 
         return $api->json();
     }
@@ -355,47 +355,82 @@ class Myinvois
         return $api->json();
     }
 
-    public function createSubmittedDocuments($response)
+    public function createMyinvoisDocuments($response, $documents)
     {
+        if (!Schema::hasTable('myinvois_documents')) return;
+
         $submissionUid = data_get($response, 'submissionUid');
         $accepted = data_get($response, 'acceptedDocuments');
 
-        return $accepted
-            ? collect($accepted)->map(fn ($data) => 
-                MyinvoisDocument::create([
+        if (!$accepted) return;
+
+        // if all line items classifications are 004, then is a consolidated submission
+        $classifications = collect($documents)->pluck('line_items')->collapse()->pluck('classifications')->collapse()->unique()->values();
+        $isConsolidated = $classifications->count() === 1 && data_get($classifications->first(), 'code') === '004';
+        $myinvoisDocuments = collect();
+
+        foreach ($accepted as $data) {
+            if ($isConsolidated) {
+                $document = collect($documents)->firstWhere('number', data_get($data, 'invoiceCodeNumber'));
+                $lineItems = data_get($document, 'line_items', []);
+
+                foreach ($lineItems as $lineItem) {
+                    $myinvoisDocuments->push(MyinvoisDocument::create([
+                        'document_uuid' => data_get($data, 'uuid'),
+                        'submission_uid' => $submissionUid,
+                        'document_number' => data_get($lineItem, 'description'),
+                        'status' => 'submitted',
+                        'is_preprod' => $this->getSettings('preprod'),
+                    ]));
+                }
+            }
+            else {
+                $myinvoisDocuments->push(MyinvoisDocument::create([
                     'document_uuid' => data_get($data, 'uuid'),
                     'submission_uid' => $submissionUid,
                     'document_number' => data_get($data, 'invoiceCodeNumber'),
                     'status' => 'submitted',
                     'is_preprod' => $this->getSettings('preprod'),
-                ])
-            )
-            : null;
+                ]));
+            }
+        }
+
+        // immediately update the document status with max 2 retries
+        $try = 1;
+        $max = 2;
+        while ($try <= $max) {
+            sleep(1);
+            $this->getSubmission($submissionUid);
+            if ($myinvoisDocuments->where('status', 'submitted')->count()) $try++;
+            else $try = $max + 1;
+        }
+
+        return $myinvoisDocuments;
     }
 
-    public function updateSubmittedDocument($response)
+    public function updateMyinvoisDocuments($response)
     {
+        if (!Schema::hasTable('myinvois_documents')) return;
+
         $documentUuid = data_get($response, 'uuid');
         $submissionUid = data_get($response, 'submissionUid');
-        $document = MyinvoisDocument::query()
+        $documents = MyinvoisDocument::query()
             ->where('document_uuid', $documentUuid)
-            ->when($submissionUid, fn ($q) => $q->where('submission_uid', $submissionUid))
-            ->latest()
-            ->first();
+            ->where('submission_uid', $submissionUid);
 
-        if (!$document) return;
+        if (!$documents->count()) return;
 
-        $document->fill([
+        $documents->update([
             'status' => strtolower(data_get($response, 'status')),
             'response' => $response,
-        ])->save();
+        ]);
     }
 
     public function validator($document)
     {
         if ($document === 'sample') $document = $this->getSample();
 
-        return Validator::build($document);
+        return app(Validator::class)->build($document);
     }
 
     public function getSample()
