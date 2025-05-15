@@ -17,10 +17,14 @@ class MyinvoisDocument extends Model
     protected $casts = [
         'request' => 'array',
         'response' => 'array',
-        'polled_at' => 'datetime',
         'status' => Status::class,
         'is_preprod' => 'boolean',
     ];
+
+    public function parent()
+    {
+        return $this->morphTo();
+    }
 
     public function getValidationLinkAttribute() : string
     {

@@ -373,7 +373,7 @@ class UBL
     public static function getDocumentContactSubschema($data)
     {
         $phone = data_get($data, 'phone');
-        $phone = $phone ? (string) str($phone)->start('+')->replace(' ', '') : '';
+        $phone = $phone ? (string) str($phone)->start('+')->replace(' ', '') : 'NA';
 
         return collect([
             'Contact.0.Telephone.0._' => $phone,

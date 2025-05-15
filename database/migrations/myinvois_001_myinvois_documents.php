@@ -2,7 +2,6 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -12,6 +11,8 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasTable('myinvois_documents')) return;
+
         Schema::create('myinvois_documents', function (Blueprint $table) {
             $table->ulid('id')->primary();
             $table->string('document_uuid')->nullable();
@@ -21,7 +22,8 @@ return new class extends Migration
             $table->json('request')->nullable();
             $table->json('response')->nullable();
             $table->boolean('is_preprod')->nullable();
-            $table->datetime('polled_at')->nullable();
+            $table->string('parent_type')->nullable();
+            $table->ulid('parent_id')->nullable();
             $table->timestamps();
         });
     }

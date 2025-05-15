@@ -399,9 +399,9 @@ class Myinvois
         $try = 1;
         $max = 2;
         while ($try <= $max) {
-            sleep(1);
+            sleep(1.5);
             $this->getSubmission($submissionUid);
-            if ($myinvoisDocuments->where('status', 'submitted')->count()) $try++;
+            if (MyinvoisDocument::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
             else $try = $max + 1;
         }
 

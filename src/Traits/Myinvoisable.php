@@ -2,16 +2,22 @@
 
 namespace Jiannius\Myinvois\Traits;
 
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
+use Jiannius\Myinvois\Observers\MyinvoisableObserver;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 trait Myinvoisable
 {
-    public function myinvoisDocuments() : HasMany
+    public static function bootMyinvoisable()
     {
-        return $this->hasMany(MyinvoisDocument::class);
+        static::observe(MyinvoisableObserver::class);
+    }
+
+    public function myinvoisDocuments() : MorphMany
+    {
+        return $this->morphMany(MyinvoisDocument::class, 'parent');
     }
 
     public function scopeSubmittableToMyinvois($query, $flag = true, $preprod = false) : void
@@ -47,11 +53,6 @@ trait Myinvoisable
         }
     }
 
-    public function getLastMyinvoisDocument($preprod = false)
-    {
-        return $this->myinvoisDocuments()->preprod($preprod)->latest()->first();
-    }
-
     public function isSubmittableToMyinvois($flag = true, $preprod = false) : bool
     {
         if (!$flag) return !$this->isSubmittableToMyinvois();
@@ -79,6 +80,16 @@ trait Myinvoisable
         if (!$flag) return !$this->isValidatedByMyinvois();
 
         return $this->getLastMyinvoisDocument($preprod)?->isValid() ?? false;
+    }
+
+    public function getLastMyinvoisDocument($preprod = false)
+    {
+        return $this->myinvoisDocuments()->preprod($preprod)->latest()->first();
+    }
+
+    public function getMyinvoisStatus($preprod = false) : Status
+    {
+        return $this->getLastMyinvoisDocument($preprod)?->status;
     }
 
     public function getMyinvoisValidationLink($preprod = false) : string
