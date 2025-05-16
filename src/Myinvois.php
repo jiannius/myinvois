@@ -397,9 +397,9 @@ class Myinvois
 
         // immediately update the document status with max 2 retries
         $try = 1;
-        $max = 2;
+        $max = 3;
         while ($try <= $max) {
-            sleep(1.5);
+            sleep(2);
             $this->getSubmission($submissionUid);
             if (MyinvoisDocument::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
             else $try = $max + 1;

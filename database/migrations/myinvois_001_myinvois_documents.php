@@ -21,7 +21,7 @@ return new class extends Migration
             $table->string('status')->nullable();
             $table->json('request')->nullable();
             $table->json('response')->nullable();
-            $table->boolean('is_preprod')->nullable();
+            $table->boolean('is_preprod')->nullable()->default(false);
             $table->string('parent_type')->nullable();
             $table->ulid('parent_id')->nullable();
             $table->timestamps();
