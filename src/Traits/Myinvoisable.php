@@ -20,39 +20,6 @@ trait Myinvoisable
         return $this->morphMany(MyinvoisDocument::class, 'parent');
     }
 
-    public function scopeSubmittableToMyinvois($query, $flag = true, $preprod = false) : void
-    {
-        if ($flag) {
-            $query->where(fn ($q) => $q
-                ->whereDoesntHave('myinvoisDocuments', fn ($q) => $q->preprod($preprod))
-                ->orWhereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status([Status::INVALID, Status::CANCELLED]))
-            );
-        }
-        else {
-            $query->whereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status([Status::SUBMITTED, Status::VALID]));
-        }
-    }
-
-    public function scopeSubmittedToMyinvois($query, $flag = true, $preprod = false) : void
-    {
-        if ($flag) {
-            $query->whereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::SUBMITTED));
-        }
-        else {
-            $query->whereDoesntHave('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::SUBMITTED));
-        }
-    }
-
-    public function scopeValidatedByMyinvois($query, $flag = true, $preprod = false) : void
-    {
-        if ($flag) {
-            $query->whereHas('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::VALID));
-        }
-        else {
-            $query->whereDoesntHave('myinvoisDocuments', fn ($q) => $q->preprod($preprod)->status(Status::VALID));
-        }
-    }
-
     public function isSubmittableToMyinvois($flag = true, $preprod = false) : bool
     {
         if (!$flag) return !$this->isSubmittableToMyinvois();

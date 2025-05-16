@@ -416,7 +416,7 @@ class Myinvois
         $submissionUid = data_get($response, 'submissionUid');
         $documents = MyinvoisDocument::query()
             ->where('document_uuid', $documentUuid)
-            ->where('submission_uid', $submissionUid);
+            ->when($submissionUid, fn ($q) => $q->where('submission_uid', $submissionUid));
 
         if (!$documents->count()) return;
 
