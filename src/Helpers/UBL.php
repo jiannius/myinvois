@@ -259,7 +259,7 @@ class UBL
 
             if ($amount = data_get($item, 'amount')) {
                 data_set($schema, 'Invoice.0.AllowanceCharge.'.$i.'.Amount.0._', $amount);
-                data_set($schema, 'Invoice.0.AllowanceCharge.'.$i.'.Amount.0.currencyID', Code::currencies($currency));
+                data_set($schema, 'Invoice.0.AllowanceCharge.'.$i.'.Amount.0.currencyID', $currency);
             }
 
             if ($desc = data_get($item, 'description')) {
