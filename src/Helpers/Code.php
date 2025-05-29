@@ -25,8 +25,13 @@ class Code
                 default => 'Code',
             };
 
-            return data_get($codes->first(fn ($item) => strtoupper($item[$labelKey]) === strtoupper($needle)), $valueKey)
-                ?? data_get($codes->first(fn ($item) => strtoupper($item[$valueKey]) === strtoupper($needle)), $labelKey);
+            $needle = strtoupper($needle);
+            $needle = $codeType === 'states' && in_array($needle, ['KUALA LUMPUR', 'PUTRAJAYA', 'LABUAN'])
+                ? 'WILAYAH PERSEKUTUAN '.$needle
+                : $needle;
+
+            return data_get($codes->first(fn ($item) => strtoupper($item[$labelKey]) === $needle), $valueKey)
+                ?? data_get($codes->first(fn ($item) => strtoupper($item[$valueKey]) === $needle), $labelKey);
         }
         else if ($arguments) {
             return;
