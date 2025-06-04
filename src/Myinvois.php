@@ -90,6 +90,8 @@ class Myinvois
             $settings['on_behalf_of'] = null;
         }
 
+        // dd($settings);
+
         return $key ? data_get($settings, $key) : $settings;
     }
 
@@ -171,8 +173,9 @@ class Myinvois
                 $endpoint = $this->getEndpoint($uri);
                 $result = Http::withToken($token)->$method($endpoint, $data);
 
-                if ($result->failed() && ($callback = $this->failedCallback)) {
-                    $result = $callback($result);
+                if ($result->failed()) {
+                    throw_if($result->status() === 403, 'Permissions denied from MyInvois Portal');
+                    if ($callback = $this->failedCallback) $result = $callback($result);
                 }
 
                 if ($timeout) {
@@ -207,8 +210,11 @@ class Myinvois
         return data_get($api->json(), 'tin');
     }
 
-    public function validateTaxpayerTIN($tin, $idType, $idValue)
+    public function validateTaxpayerTIN($tin, $brn = null, $nric = null)
     {
+        $idType = $brn ? 'BRN' : ($nric ? 'NRIC' : null);
+        $idValue = $brn ?? $nric;
+
         $api = $this->callApi(
             uri: 'taxpayer/validate/'.$tin,
             data: [
