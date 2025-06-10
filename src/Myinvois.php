@@ -426,10 +426,10 @@ class Myinvois
 
         if (!$documents->count()) return;
 
-        $documents->update([
+        $documents->each(fn ($document) => $document->update([
             'status' => strtolower(data_get($response, 'status')),
             'response' => $response,
-        ]);
+        ]));
     }
 
     public function validator($document)

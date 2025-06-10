@@ -3,6 +3,7 @@
 namespace Jiannius\Myinvois\Traits;
 
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Observers\MyinvoisableObserver;
@@ -10,63 +11,65 @@ use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 trait Myinvoisable
 {
-    public static function bootMyinvoisable()
+    protected function initializeMyinvoisable()
+    {
+        $this->casts['myinvois_status'] = Status::class;
+        $this->casts['myinvois_preprod_status'] = Status::class;
+    }
+
+    protected static function bootMyinvoisable()
     {
         static::observe(MyinvoisableObserver::class);
     }
 
     public function myinvoisDocuments() : MorphMany
     {
-        return $this->morphMany(MyinvoisDocument::class, 'parent');
+        return $this->morphMany(MyinvoisDocument::class, 'parent')
+            ->where('is_preprod', $this->isMyinvoisPreprod());
     }
 
-    public function isSubmittableToMyinvois($flag = true, $preprod = false) : bool
+    public function latestMyinvoisDocument() : MorphOne
     {
-        if (!$flag) return !$this->isSubmittableToMyinvois();
-
-        return !$this->myinvoisDocuments()->preprod($preprod)->count()
-            || $this->getLastMyinvoisDocument($preprod)->isSubmittable();
+        return $this->morphOne(MyinvoisDocument::class, 'parent')
+            ->where('is_preprod', $this->isMyinvoisPreprod())
+            ->latestOfMany();
     }
 
-    public function isSubmittedToMyinvois($flag = true, $preprod = false) : bool
+    public function scopeMyinvoisSubmitted($query, $submitted = true) : void
     {
-        if (!$flag) return !$this->isSubmittedToMyinvois();
-
-        return $this->getLastMyinvoisDocument($preprod)?->isSubmitted() ?? false;
+        if ($submitted) {
+            $query->whereHas('latestMyinvoisDocument', fn ($q) => $q->whereIn('status', [Status::SUBMITTED, Status::VALID]));
+        }
+        else {
+            $query->whereDoesntHave('latestMyinvoisDocument', fn ($q) => $q->whereIn('status', [Status::SUBMITTED, Status::VALID]));
+        }
     }
 
-    public function isCancellableFromMyinvois($flag = true, $preprod = false) : bool
+    public function isMyinvoisPreprod() : bool
     {
-        if (!$flag) return !$this->isCancellableFromMyinvois();
-
-        return $this->getLastMyinvoisDocument($preprod)?->isCancellable() ?? false;
+        return false;
     }
 
-    public function isValidatedByMyinvois($flag = true, $preprod = false) : bool
+    public function isMyinvoisSubmitted($submitted = true) : bool
     {
-        if (!$flag) return !$this->isValidatedByMyinvois();
+        if (!$submitted) return !$this->isMyinvoisSubmitted();
 
-        return $this->getLastMyinvoisDocument($preprod)?->isValid() ?? false;
+        return $this->latestMyinvoisDocument?->status?->is(Status::SUBMITTED, Status::VALID) ?? false;
     }
 
-    public function getLastMyinvoisDocument($preprod = false)
+    public function getMyinvoisStatus()
     {
-        return $this->myinvoisDocuments()->preprod($preprod)->latest()->first();
+        return $this->isMyinvoisPreprod() ? $this->myinvois_preprod_status : $this->myinvois_status;
     }
 
-    public function getMyinvoisStatus($preprod = false) : Status
+    public function getMyinvoisValidationLink() : string
     {
-        return $this->getLastMyinvoisDocument($preprod)?->status;
+        return $this->latestMyinvoisDocument?->validation_link ?? '';
     }
 
-    public function getMyinvoisValidationLink($preprod = false) : string
+    public function getMyinvoisQrCode() : string
     {
-        return $this->getLastMyinvoisDocument($preprod)?->validation_link ?? '';
-    }
-
-    public function getMyinvoisQrCode($preprod = false) : string
-    {
-        $url = $this->getMyinvoisValidationLink($preprod);
+        $url = $this->getMyinvoisValidationLink();
 
         if (!$url) return '';
 

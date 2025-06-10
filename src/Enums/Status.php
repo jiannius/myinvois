@@ -23,4 +23,14 @@ enum Status : string
     {
         return str()->title($this->value);
     }
+
+    public function is(...$value) : bool
+    {
+        return collect($value)->some(fn ($val) => $this->value === $val || $this->name === $val || $this === $val);
+    }
+
+    public function isNot(...$value) : bool
+    {
+        return !$this->is(...$value);
+    }
 }

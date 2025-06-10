@@ -5,7 +5,9 @@ namespace Jiannius\Myinvois\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Jiannius\Myinvois\Enums\Status;
+use Jiannius\Myinvois\Observers\MyinvoisDocumentObserver;
 
 class MyinvoisDocument extends Model
 {
@@ -21,7 +23,12 @@ class MyinvoisDocument extends Model
         'is_preprod' => 'boolean',
     ];
 
-    public function parent()
+    protected static function booted() : void
+    {
+        static::observe(MyinvoisDocumentObserver::class);
+    }
+
+    public function parent() : MorphTo
     {
         return $this->morphTo();
     }
@@ -62,33 +69,8 @@ class MyinvoisDocument extends Model
             ->all();
     }
 
-    public function isSubmittable() : bool
-    {
-        return in_array($this->status, [Status::INVALID, Status::CANCELLED]);
-    }
-
-    public function isSubmitted() : bool
-    {
-        return $this->status === Status::SUBMITTED;
-    }
-
-    public function isValid() : bool
-    {
-        return $this->status === Status::VALID;
-    }
-
-    public function isInvalid() : bool
-    {
-        return $this->status === Status::INVALID;
-    }
-
-    public function isCancelled() : bool
-    {
-        return $this->status === Status::CANCELLED;
-    }
-
     public function isCancellable() : bool
     {
-        return $this->status === Status::VALID && $this->created_at->diffInHours(now()) < 72;
+        return $this->status?->is('VALID') && $this->created_at->diffInHours(now()) < 72;
     }
 }
