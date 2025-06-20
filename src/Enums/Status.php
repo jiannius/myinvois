@@ -24,6 +24,16 @@ enum Status : string
         return str()->title($this->value);
     }
 
+    public function code()
+    {
+        return match ($this) {
+            static::SUBMITTED => 1,
+            static::VALID => 2,
+            static::INVALID => 3,
+            static::CANCELLED => 4,
+        };
+    }
+
     public function is(...$value) : bool
     {
         return collect($value)->some(fn ($val) => $this->value === $val || $this->name === $val || $this === $val);
