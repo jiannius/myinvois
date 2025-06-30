@@ -1400,13 +1400,23 @@
         "MSIC Category Reference": "C"
     },
     {
+        "Code": "16100",
+        "Description": "Sawmilling and planning of wood",
+        "MSIC Category Reference": "C"
+    },
+    {
         "Code": "16211",
         "Description": "Manufacture of veneer sheets and plywood",
         "MSIC Category Reference": "C"
     },
     {
-        "Code": "16221",
-        "Description": "Manufacture of builders' carpentry",
+        "Code": "16211",
+        "Description": "Manufacture of veneer sheets and plywood",
+        "MSIC Category Reference": "C"
+    },
+    {
+        "Code": "16212",
+        "Description": "Manufacture of particle board and fibreboard",
         "MSIC Category Reference": "C"
     },
     {
@@ -3370,6 +3380,11 @@
         "MSIC Category Reference": "G"
     },
     {
+        "Code": "47411",
+        "Description": "Retail sale of computers, computer equipment and supplies",
+        "MSIC Category Reference": "G"
+    },
+    {
         "Code": "47412",
         "Description": "Retail sale of video game consoles and non-customized software",
         "MSIC Category Reference": "G"
@@ -3387,6 +3402,11 @@
     {
         "Code": "47510",
         "Description": "Retail sale of textiles in specialized stores",
+        "MSIC Category Reference": "G"
+    },
+    {
+        "Code": "47520",
+        "Description": "Retail sale of construction materials, hardware, paints and glass",
         "MSIC Category Reference": "G"
     },
     {
@@ -3447,6 +3467,11 @@
     {
         "Code": "47611",
         "Description": "Retail sale of office supplies and equipment",
+        "MSIC Category Reference": "G"
+    },
+    {
+        "Code": "47620",
+        "Description": "Retail sale of musical records, audio tapes, compact discs , cassettes, video tapes, VCDs and DVDs, blank tapes and discs",
         "MSIC Category Reference": "G"
     },
     {
@@ -3591,6 +3616,11 @@
     },
     {
         "Code": "47891",
+        "Description": "Retail sale of books via stalls or markets",
+        "MSIC Category Reference": "G"
+    },
+    {
+        "Code": "47892",
         "Description": "Retail sale of carpets and rugs via stalls or markets",
         "MSIC Category Reference": "G"
     },
@@ -3627,6 +3657,11 @@
     {
         "Code": "47914",
         "Description": "Internet retail auctions",
+        "MSIC Category Reference": "G"
+    },
+    {
+        "Code": "47991",
+        "Description": "Retail sale of any kind of product by direct sales or door-to-door sales persons",
         "MSIC Category Reference": "G"
     },
     {
@@ -3927,6 +3962,16 @@
     {
         "Code": "55900",
         "Description": "Other accommodation",
+        "MSIC Category Reference": "I"
+    },
+    {
+        "Code": "56101",
+        "Description": "Restaurants and restaurant cum night clubs",
+        "MSIC Category Reference": "I"
+    },
+    {
+        "Code": "56102",
+        "Description": "Cafeterias/canteens ",
         "MSIC Category Reference": "I"
     },
     {
