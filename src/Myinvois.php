@@ -39,9 +39,12 @@ class Myinvois
         return $this;
     }
 
-    public function setOnBehalfOf($value)
+    public function setOnBehalfOf($tin, $brn = null)
     {
-        $this->settings['on_behalf_of'] = $value;
+        $this->settings['on_behalf_of'] = $brn && str($tin)->is('IG*') && !str($tin)->is('*:*')
+            ? "$tin:$brn"
+            : $tin;
+
         return $this;
     }
 
