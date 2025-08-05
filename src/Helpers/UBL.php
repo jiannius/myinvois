@@ -318,7 +318,7 @@ class UBL
                 collect(data_get($item, 'tariffs'))->map(fn ($tariff) => [...$tariff, 'is_tariff' => true])
             ) as $j => $classification) {
                 $code = data_get($classification, 'code');
-                $code = is_numeric($code) ? $code : Code::classifications($code);
+                $code = Code::classifications()->value($code);
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0._', $code);
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0.listID', data_get($classification, 'is_tariff') ? 'PTC' : 'CLASS');
             }
@@ -389,10 +389,10 @@ class UBL
             'PostalAddress.0.AddressLine.2.Line.0._' => data_get($data, 'address_line_3') ?? '',
             'PostalAddress.0.CityName.0._' => data_get($data, 'city') ?? '',
             'PostalAddress.0.PostalZone.0._' => data_get($data, 'postcode') ?? '',
-            'PostalAddress.0.CountrySubentityCode.0._' => Code::states(data_get($data, 'state')) ?? '',
+            'PostalAddress.0.CountrySubentityCode.0._' => Code::states()->value(data_get($data, 'state')) ?? '',
         ])->filter();
 
-        if ($country = Code::countries(data_get($data, 'country'))) {
+        if ($country = Code::countries()->value(data_get($data, 'country'))) {
             $schema->put('PostalAddress.0.Country.0.IdentificationCode.0._', $country);
             $schema->put('PostalAddress.0.Country.0.IdentificationCode.0.listID', 'ISO3166-1');
             $schema->put('PostalAddress.0.Country.0.IdentificationCode.0.listAgencyID', '6');
@@ -405,7 +405,7 @@ class UBL
     {
         if (!$taxes) {
             $taxes = [[
-                'code' => Code::taxes('Not Applicable'),
+                'code' => Code::taxes()->value('Not Applicable'),
                 'name' => 'Not Applicable',
                 'amount' => 0,
                 'taxable_amount' => 0,
@@ -460,7 +460,7 @@ class UBL
             data_get($ubl, 'Invoice.0.IssueTime.0._'),
         ])->filter()->join('T'));
 
-        $data['document_type'] = Code::documentTypes(data_get($ubl, 'Invoice.0.InvoiceTypeCode.0._'));
+        $data['document_type'] = Code::documentTypes()->value(data_get($ubl, 'Invoice.0.InvoiceTypeCode.0._'));
         $data['document_version'] = data_get($ubl, 'Invoice.0.InvoiceTypeCode.0.listVersionID');
         $data['currency'] = data_get($ubl, 'Invoice.0.DocumentCurrencyCode.0._');
         $data['currency_rate'] = data_get($ubl, 'Invoice.0.TaxExchangeRate.0.CalculationRate.0._');
@@ -485,8 +485,8 @@ class UBL
             'address_line_3' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.AddressLine.2.Line.0._'),
             'postcode' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.PostalZone.0._'),
             'city' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.CityName.0._'),
-            'state' => Code::states(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.CountrySubentityCode.0._')),
-            'country' => Code::countries(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.Country.0.IdentificationCode.0._')),
+            'state' => Code::states()->value(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.CountrySubentityCode.0._')),
+            'country' => Code::countries()->value(data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.PostalAddress.0.Country.0.IdentificationCode.0._')),
             'certex' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.AdditionalAccountID.0._'),
             'msic_code' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.IndustryClassificationCode.0._'),
             'msic_description' => data_get($ubl, 'Invoice.0.AccountingSupplierParty.0.Party.0.IndustryClassificationCode.0.name'),
@@ -511,8 +511,8 @@ class UBL
             'address_line_3' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.AddressLine.2.Line.0._'),
             'postcode' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.PostalZone.0._'),
             'city' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.CityName.0._'),
-            'state' => Code::states(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.CountrySubentityCode.0._')),
-            'country' => Code::countries(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.Country.0.IdentificationCode.0._')),
+            'state' => Code::states()->value(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.CountrySubentityCode.0._')),
+            'country' => Code::countries()->value(data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.PostalAddress.0.Country.0.IdentificationCode.0._')),
             'msic_code' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.IndustryClassificationCode.0._'),
             'msic_description' => data_get($ubl, 'Invoice.0.AccountingCustomerParty.0.Party.0.IndustryClassificationCode.0.name'),
         ];   
@@ -534,7 +534,7 @@ class UBL
 
 
         $data['payment_mode'] = data_get($ubl, 'Invoice.0.PaymentMeans.0.PaymentMeansCode.0._');
-        if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes($data['payment_modes']);
+        if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes()->value($data['payment_modes']);
 
         $data['payment_term'] = data_get($ubl, 'Invoice.0.PaymentTerms.0.Note.0._');
             
@@ -570,7 +570,7 @@ class UBL
         $data['taxes'] = collect(data_get($ubl, 'Invoice.0.TaxTotal.0.TaxSubtotal'))
             ->map(function ($tax) {
                 $code = data_get($tax, 'TaxCategory.0.ID.0._');
-                $name = $code ? Code::taxes($code) : null;
+                $name = $code ? Code::taxes()->label($code) : null;
 
                 return [
                     'code' => $code,
@@ -605,7 +605,7 @@ class UBL
                 'taxes' => collect(data_get($item, 'TaxTotal.0.TaxSubtotal'))
                     ->map(function ($tax) {
                         $code = data_get($tax, 'TaxCategory.0.ID.0._');
-                        $name = $code ? Code::taxes($code) : null;
+                        $name = $code ? Code::taxes()->label($code) : null;
 
                         return [
                             'code' => $code,

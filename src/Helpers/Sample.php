@@ -9,10 +9,10 @@ class Sample
         return [
             'number' => 'INV'.time(),
             'issued_at' => now(),
-            'document_type' => Code::documentTypes('Invoice'),
-            'document_version' => Code::documentVersions('Invoice'),
-            'currency' => Code::currencies('MYR'),
-            'payment_mode' => Code::paymentModes('Bank Transfer'),
+            'document_type' => Code::documentTypes()->value('Invoice'),
+            'document_version' => Code::documentVersions()->value('Invoice'),
+            'currency' => Code::currencies()->value('MYR'),
+            'payment_mode' => Code::paymentModes()->value('Bank Transfer'),
             'payment_term' => 'Payment method is cash',
             'billing' => [
                 'start_at' => now(),
@@ -50,8 +50,8 @@ class Sample
                 'address_line_3' => 'Persiaran Jaya',
                 'postcode' => '50480',
                 'city' => 'Kuala Lumpur',
-                'state' => Code::states('Wilayah Persekutuan Kuala Lumpur'),
-                'country' => Code::countries('Malaysia'),
+                'state' => Code::states()->value('Wilayah Persekutuan Kuala Lumpur'),
+                'country' => Code::countries()->value('Malaysia'),
                 'certex' => 'CPT-CCN-W-211111-KL-000002',
                 'msic_code' => '46510',
                 'msic_description' => 'Wholesale of computer hardware, software and peripherals',
@@ -67,8 +67,8 @@ class Sample
                 'address_line_3' => 'Persiaran Jaya',
                 'postcode' => '50480',
                 'city' => 'Kuala Lumpur',
-                'state' => Code::states('Wilayah Persekutuan Kuala Lumpur'),
-                'country' => Code::countries('Malaysia'),
+                'state' => Code::states()->value('Wilayah Persekutuan Kuala Lumpur'),
+                'country' => Code::countries()->value('Malaysia'),
             ],
             // 'shipping' => [
             //     'name' => 'Recipient\'s Name',
@@ -78,8 +78,8 @@ class Sample
             //     'address_line_3' => 'Persiaran Jaya',
             //     'postcode' => '50480',
             //     'city' => 'Kuala Lumpur',
-            //     'state' => Code::states('Wilayah Persekutuan Kuala Lumpur'),
-            //     'country' => Code::countries('Malaysia'),
+            //     'state' => Code::states()->value('Wilayah Persekutuan Kuala Lumpur'),
+            //     'country' => Code::countries()->value('Malaysia'),
             //     'amount' => 25.00,
             //     'description' => 'Lalamove',
             //     'reference' => 'L121321',
@@ -107,7 +107,7 @@ class Sample
             ],
             'taxes' => [
                 [
-                    'code' => Code::taxes('Sales Tax'),
+                    'code' => Code::taxes()->value('Sales Tax'),
                     'name' => 'Sales Tax',
                     'amount' => 30,
                 ],
@@ -123,7 +123,7 @@ class Sample
                     'unit_price' => 500.00,
                     'country' => null,
                     'classifications' => [
-                        ['code' => Code::classifications('Others')],
+                        ['code' => Code::classifications()->value('Others')],
                     ],
                     // 'tariffs' => [
                     //     ['code' => '22223334444'],
@@ -131,7 +131,7 @@ class Sample
                     // ],
                     'taxes' => [
                         [
-                            'code' => Code::taxes('Sales Tax'),
+                            'code' => Code::taxes()->value('Sales Tax'),
                             'name' => 'Sales Tax',
                             'amount' => 30,
                             'taxable_amount' => 470,

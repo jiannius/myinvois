@@ -73,6 +73,8 @@ class Validator
             'buyer.email.email' => 'Buyer email is invalid',
             'buyer.address_line_1.required' => 'Buyer address line 1 is required',
             'buyer.city.required' => 'Buyer city is required',
+            'buyer.country.required' => 'Buyer country is required',
+            'buyer.state.required' => 'Buyer state is required',
             'subtotal.required' => 'Subtotal is required',
             'grand_total.required' => 'Grand total is required',
             'payable_total.required' => 'Payable total is required',
@@ -116,13 +118,13 @@ class Validator
             'supplier.country' => [
                 'required',
                 function ($attribute, $value, $fail) {
-                    if (!is_string(Code::countries($value))) $fail('Invalid supplier country');
+                    if (!is_string(Code::countries()->value($value))) $fail('Invalid supplier country');
                 },
             ],
             'supplier.state' => [
                 'required',
                 function ($attribute, $value, $fail) {
-                    if (!is_string(Code::states($value))) $fail('Invalid supplier state');
+                    if (!is_string(Code::states()->value($value))) $fail('Invalid supplier state');
                 },
             ],
         ];
@@ -150,13 +152,13 @@ class Validator
             'buyer.country' => [
                 'required',
                 function ($attribute, $value, $fail) {
-                    if (!is_string(Code::countries($value))) $fail('Invalid buyer country');
+                    if (!is_string(Code::countries()->value($value))) $fail('Invalid buyer country');
                 },
             ],
             'buyer.state' => [
                 'required',
                 function ($attribute, $value, $fail) {
-                    if (!is_string(Code::states($value))) $fail('Invalid buyer state');
+                    if (!is_string(Code::states()->value($value))) $fail('Invalid buyer state');
                 },
             ],
         ];
