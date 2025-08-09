@@ -34,8 +34,11 @@ class Code
 
             public function get($needle)
             {
-                if (in_array($this->codeType, ['countries'])) {
+                if ($this->codeType === 'countries') {
                     $needle = strtoupper($needle);
+                }
+                else if ($this->codeType === 'states' && in_array(strtoupper($needle), ['KUALA LUMPUR', 'LABUAN', 'PUTRAJAYA'])) {
+                    $needle = str()->headline('WILAYAH PERSEKUTUAN '.$needle);
                 }
 
                 return $this->collection->first(fn ($item) => $item['value'] === $needle)
