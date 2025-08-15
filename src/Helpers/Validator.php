@@ -107,8 +107,10 @@ class Validator
 
         return [
             ...$rules,
-            'supplier.brn' => 'required_without:supplier.nric',
-            'supplier.nric' => 'required_without:supplier.brn',
+            'supplier.brn' => 'required_without_all:supplier.nric,supplier.passport,supplier.army',
+            'supplier.nric' => 'required_without_all:supplier.brn,supplier.passport,supplier.army',
+            'supplier.passport' => 'required_without_all:supplier.brn,supplier.nric,supplier.army',
+            'supplier.army' => 'required_without_all:supplier.brn,supplier.nric,supplier.passport',
             'supplier.phone' => 'required',
             'supplier.email' => 'nullable|email',
             'supplier.msic_code' => 'required',
@@ -143,8 +145,10 @@ class Validator
 
         return [
             ...$rules,
-            'buyer.brn' => 'required_without:buyer.nric',
-            'buyer.nric' => 'required_without:buyer.brn',
+            'buyer.brn' => 'required_without_all:buyer.nric,buyer.passport,buyer.army',
+            'buyer.nric' => 'required_without_all:buyer.brn,buyer.passport,buyer.army',
+            'buyer.passport' => 'required_without_all:buyer.brn,buyer.nric,buyer.army',
+            'buyer.army' => 'required_without_all:buyer.brn,buyer.nric,buyer.passport',
             'buyer.phone' => 'required',
             'buyer.email' => 'nullable|email',
             'buyer.address_line_1' => 'required',

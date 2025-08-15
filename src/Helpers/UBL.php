@@ -358,9 +358,12 @@ class UBL
         return collect([
             ['TIN', data_get($data, 'tin')],
             (
-                data_get($data, 'nric')
-                ? ['NRIC', data_get($data, 'nric')]
-                : ['BRN', data_get($data, 'brn')]
+                match (true) {
+                    !empty(data_get($data, 'nric')) => ['NRIC', data_get($data, 'nric')],
+                    !empty(data_get($data, 'passport')) => ['PASSPORT', data_get($data, 'passport')],
+                    !empty(data_get($data, 'army')) => ['ARMY', data_get($data, 'army')],
+                    default => ['BRN', data_get($data, 'brn')],
+                }
             ),
             ['SST', data_get($data, 'sst')],
             ['TTX', data_get($data, 'ttx')],
