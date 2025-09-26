@@ -6,6 +6,7 @@
         "doctrine/dbal": "^3.6",
         "symfony/http-client": "^6.0",
         "laravel/pail": "^1.0",
+        "noki/laravel-xml-converter": "^1.0",
         "simplesoftwareio/simple-qrcode": "^4.2"
     },
     "require-dev": {
