@@ -1,9 +1,12 @@
 <?php
 
-namespace Jiannius\Myinvois\Observers;
+namespace Jiannius\Myinvois\Models\Observers;
 
 class MyinvoisDocumentObserver
 {
+    /**
+     * The model saved event
+     */
     public function saved($document)
     {
         $document = $document->fresh();
@@ -19,6 +22,9 @@ class MyinvoisDocumentObserver
         );
     }
 
+    /**
+     * The model deleting event
+     */
     public function deleting($document)
     {
         $document = $document->fresh();
@@ -33,6 +39,9 @@ class MyinvoisDocumentObserver
         );
     }
 
+    /**
+     * Fill the parent status
+     */
     public function fillParentStatus($document, $parent, $status)
     {
         if ($document->is_preprod) $parent->fill(['myinvois_preprod_status' => $status])->saveQuietly();

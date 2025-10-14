@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Jiannius\Myinvois\Enums\Status;
-use Jiannius\Myinvois\Observers\MyinvoisDocumentObserver;
+use Jiannius\Myinvois\Models\Observers\MyinvoisDocumentObserver;
 
 class MyinvoisDocument extends Model
 {
@@ -23,16 +23,25 @@ class MyinvoisDocument extends Model
         'is_preprod' => 'boolean',
     ];
 
+    /**
+     * The booted method for model
+     */
     protected static function booted() : void
     {
         static::observe(MyinvoisDocumentObserver::class);
     }
 
+    /**
+     * Get the parent model
+     */
     public function parent() : MorphTo
     {
         return $this->morphTo();
     }
 
+    /**
+     * Get the validation link attribute
+     */
     public function getValidationLinkAttribute() : string
     {
         $longid = data_get($this->response, 'longId');
@@ -44,11 +53,17 @@ class MyinvoisDocument extends Model
         return "{$baseurl}/{$this->document_uuid}/share/{$longid}";
     }
 
+    /**
+     * Scope the query to only include preprod documents
+     */
     public function scopePreprod($query, $preprod = true) : void
     {
         $query->where('is_preprod', (bool) $preprod);
     }
 
+    /**
+     * Scope the query to only include documents with the given status
+     */
     public function scopeStatus($query, $status) : void
     {
         if (!$status) return;
@@ -57,6 +72,9 @@ class MyinvoisDocument extends Model
         else $query->where('status', $status);
     }
 
+    /**
+     * Get the errors from the response
+     */
     public function getErrors()
     {
         return collect(data_get($this->response, 'validationResults.validationSteps'))
@@ -69,6 +87,9 @@ class MyinvoisDocument extends Model
             ->all();
     }
 
+    /**
+     * Check if the document is cancellable
+     */
     public function isCancellable() : bool
     {
         return $this->status?->is('VALID') && $this->created_at->diffInHours(now()) < 72;

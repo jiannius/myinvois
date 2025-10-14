@@ -21,24 +21,36 @@ class Myinvois
 
     public $failedCallback;
 
+    /**
+     * Set the client id
+     */
     public function setClientId($value)
     {
         $this->settings['client_id'] = $value;
         return $this;
     }
 
+    /**
+     * Set the client secret
+     */
     public function setClientSecret($value)
     {
         $this->settings['client_secret'] = $value;
         return $this;
     }
 
+    /**
+     * Set the preprod
+     */
     public function setPreprod($value)
     {
         $this->settings['preprod'] = $value;
         return $this;
     }
 
+    /**
+     * Set the on behalf of
+     */
     public function setOnBehalfOf($tin, $brn = null)
     {
         $this->settings['on_behalf_of'] = $brn && str($tin)->is('IG*') && !str($tin)->is('*:*')
@@ -48,24 +60,36 @@ class Myinvois
         return $this;
     }
 
+    /**
+     * Set the private key
+     */
     public function setPrivateKey($value)
     {
         $this->settings['private_key'] = $value;
         return $this;
     }
 
+    /**
+     * Set the certificate
+     */
     public function setCertificate($value)
     {
         $this->settings['certificate'] = $value;
         return $this;
     }
 
+    /**
+     * Set the failed callback
+     */
     public function setFailedCallback($callback)
     {
         $this->failedCallback = $callback;
         return $this;
     }
 
+    /**
+     * Get the settings
+     */
     public function getSettings($key = null)
     {
         $preprod = is_bool(data_get($this->settings, 'preprod')) ? data_get($this->settings, 'preprod') : (
@@ -98,6 +122,9 @@ class Myinvois
         return $key ? data_get($settings, $key) : $settings;
     }
 
+    /**
+     * Get the endpoint
+     */
     public function getEndpoint($uri)
     {
         $base = $this->getSettings('preprod') ? $this->baseUrl['preprod'] : $this->baseUrl['prod'];
@@ -106,6 +133,9 @@ class Myinvois
         return $base.$prefix.$uri;
     }
 
+    /**
+     * Get the token
+     */
     public function getToken()
     {
         $clientId = $this->getSettings('client_id');
@@ -149,6 +179,9 @@ class Myinvois
         return $this->getToken();
     }
 
+    /**
+     * Call the API
+     */
     public function callApi($uri, $method = 'GET', $data = [], $timeout = null) : mixed
     {
         $method = strtolower($method);
@@ -198,6 +231,9 @@ class Myinvois
         return $result;
     }
 
+    /**
+     * Search the taxpayer TIN
+     */
     public function searchTaxpayerTIN($idType = null, $idValue = null, $taxpayerName = null)
     {
         $api = $this->callApi(
@@ -213,6 +249,9 @@ class Myinvois
         return data_get($api->json(), 'tin');
     }
 
+    /**
+     * Validate the taxpayer TIN
+     */
     public function validateTaxpayerTIN($tin, $brn = null, $nric = null)
     {
         $idType = $brn ? 'BRN' : ($nric ? 'NRIC' : null);
@@ -229,6 +268,9 @@ class Myinvois
         return $api->ok();
     }
 
+    /**
+     * Get the recent documents
+     */
     public function getRecentDocuments($data = [])
     {
         $api = $this->callApi(
@@ -240,6 +282,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Get the submission
+     */
     public function getSubmission($uid, $pageNo = null, $pageSize = null)
     {
         $api = $this->callApi(
@@ -258,6 +303,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Get the document
+     */
     public function getDocument($uid)
     {
         $api = $this->callApi(
@@ -268,6 +316,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Get the document details
+     */
     public function getDocumentDetails($uid)
     {
         $api = $this->callApi(
@@ -280,6 +331,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Search the documents
+     */
     public function searchDocuments($data = [])
     {
         $api = $this->callApi(
@@ -291,6 +345,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Submit the documents
+     */
     public function submitDocuments($documents = [])
     {
         if ($documents === 'sample') $documents = [$this->getSample()];
@@ -333,6 +390,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Cancel the document
+     */
     public function cancelDocument($uid, $reason = null)
     {
         $api = $this->callApi(
@@ -350,6 +410,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Reject the document
+     */
     public function rejectDocument($uid, $reason = null)
     {
         $api = $this->callApi(
@@ -364,6 +427,9 @@ class Myinvois
         return $api->json();
     }
 
+    /**
+     * Create the myinvois documents
+     */
     public function createMyinvoisDocuments($response, $documents)
     {
         if (!Schema::hasTable('myinvois_documents')) return;
@@ -417,6 +483,9 @@ class Myinvois
         return $myinvoisDocuments;
     }
 
+    /**
+     * Update the myinvois documents
+     */
     public function updateMyinvoisDocuments($response)
     {
         if (!Schema::hasTable('myinvois_documents')) return;
@@ -435,6 +504,9 @@ class Myinvois
         ]));
     }
 
+    /**
+     * Get the validator
+     */
     public function validator($document)
     {
         if ($document === 'sample') $document = $this->getSample();
@@ -442,6 +514,9 @@ class Myinvois
         return app(Validator::class)->build($document);
     }
 
+    /**
+     * Get the sample
+     */
     public function getSample()
     {
         return Sample::build();
