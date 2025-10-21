@@ -6,6 +6,9 @@ use Noki\XmlConverter\Convert;
 
 class UBL
 {
+    /**
+     * Build the UBL document schema
+     */
     public static function build($data)
     {
         $schema = [];
@@ -25,6 +28,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the essential schema for the document
+     */
     public static function getDocumentEssentialSchema($schema, $data)
     {
         $date = data_get($data, 'issued_at');
@@ -47,6 +53,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the currency schema for the document
+     */
     public static function getDocumentCurrencySchema($schema, $data)
     {
         $currency = data_get($data, 'currency');
@@ -64,6 +73,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the supplier schema for the document
+     */
     public static function getDocumentSupplierSchema($schema, $data)
     {
         $supplier = data_get($data, 'supplier');
@@ -105,6 +117,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the buyer schema for the document
+     */
     public static function getDocumentBuyerSchema($schema, $data)
     {
         $buyer = data_get($data, 'buyer');
@@ -128,6 +143,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the billing period schema for the document
+     */
     public static function getDocumentBillingPeriodSchema($schema, $data)
     {
         $billing = data_get($data, 'billing');
@@ -150,6 +168,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the references schema for the document
+     */
     public static function getDocumentReferencesSchema($schema, $data)
     {
         $refs = data_get($data, 'references');
@@ -175,6 +196,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the shipping schema for the document
+     */
     public static function getDocumentShippingSchema($schema, $data)
     {
         $shipping = data_get($data, 'shipping');
@@ -211,6 +235,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the prepaid schema for the document
+     */
     public static function getDocumentPrepaidSchema($schema, $data)
     {
         $prepaid = data_get($data, 'prepaid');
@@ -234,6 +261,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the payment mode schema for the document
+     */
     public static function getDocumentPaymentModeSchema($schema, $data)
     {
         if ($paymode = data_get($data, 'payment_mode')) {
@@ -247,6 +277,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the charges and discounts schema for the document
+     */
     public static function getDocumentChargesAndDiscountsSchema($schema, $data)
     {
         $charges = data_get($data, 'charges', []);
@@ -272,6 +305,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the totals schema for the document
+     */
     public static function getDocumentTotalsSchema($schema, $data)
     {
         $currency = data_get($data, 'currency');
@@ -296,6 +332,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the line items schema for the document
+     */
     public static function getDocumentLineItemsSchema($schema, $data)
     {
         $currency = data_get($data, 'currency');
@@ -355,6 +394,9 @@ class UBL
         return $schema;
     }
 
+    /**
+     * Get the TIN subschema for the document
+     */
     public static function getDocumentTINSubschema($data)
     {
         return collect([
@@ -375,6 +417,9 @@ class UBL
         ])->toArray();
     }
 
+    /**
+     * Get the contact subschema for the document
+     */
     public static function getDocumentContactSubschema($data)
     {
         $phone = data_get($data, 'phone');
@@ -386,6 +431,9 @@ class UBL
         ])->filter()->toArray();
     }
 
+    /**
+     * Get the address subschema for the document
+     */
     public static function getDocumentAddressSubschema($data)
     {
         $schema = collect([
@@ -394,7 +442,9 @@ class UBL
             'PostalAddress.0.AddressLine.2.Line.0._' => data_get($data, 'address_line_3') ?? '',
             'PostalAddress.0.CityName.0._' => data_get($data, 'city') ?? '',
             'PostalAddress.0.PostalZone.0._' => data_get($data, 'postcode') ?? '',
-            'PostalAddress.0.CountrySubentityCode.0._' => Code::states()->value(data_get($data, 'state')) ?? '',
+            'PostalAddress.0.CountrySubentityCode.0._' => data_get($data, 'state')
+                ? (Code::states()->value(data_get($data, 'state')) ?? '')
+                : Code::states()->value('Not Applicable'),
         ])->filter();
 
         if ($country = Code::countries()->value(data_get($data, 'country'))) {
@@ -406,6 +456,9 @@ class UBL
         return $schema->toArray();
     }
 
+    /**
+     * Get the taxes subschema for the document
+     */
     public static function getDocumentTaxesSubschema($taxes, $currency)
     {
         if (!$taxes) {
@@ -453,7 +506,9 @@ class UBL
         return $schema;
     }
 
-    // accept ubl schema and restore to regular data
+    /**
+     * Accept UBL schema and restore to regular data
+     */
     public static function restore($raw)
     {
         return str($raw)->startsWith('<Invoice ')
