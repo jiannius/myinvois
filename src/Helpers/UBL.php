@@ -178,18 +178,22 @@ class UBL
         if (!$refs) return $schema;
 
         foreach ($refs as $i => $ref) {
-            if ($num = data_get($ref, 'reference')) {
-                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.ID.0._', $num);
+            $type = data_get($ref, 'type');
+            $value = str(data_get($ref, 'value'))->replace(' ', '')->trim()->toString();
+
+            if (!$type || !$value) continue;
+
+            if ($type === 'CUSTOMS') {
+                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.DocumentType.0._', 'CustomsImportForm');
+                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.ID.0._', str($value)->replace('/', ',')->toString());
             }
-            if ($type = data_get($ref, 'type')) {
-                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.DocumentType.0._', match ($type) {
-                    'CUSTOMS' => 'CustomsImportForm',
-                    'FTA' => 'FreeTradeAgreement',
-                    default => $type,
-                });
+            else if ($type === 'INCOTERMS') {
+                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.ID.0._', $value);
             }
-            if ($desc = data_get($ref, 'description')) {
-                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.DocumentDescription.0._', $desc);
+            else if ($type === 'FTA') {
+                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.DocumentType.0._', 'FreeTradeAgreement');
+                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.ID.0._', 'FTA');
+                data_set($schema, 'Invoice.0.AdditionalDocumentReference.'.$i.'.DocumentDescription.0._', $value);
             }
         }
 
@@ -443,7 +447,7 @@ class UBL
             'PostalAddress.0.CityName.0._' => data_get($data, 'city') ?? '',
             'PostalAddress.0.PostalZone.0._' => data_get($data, 'postcode') ?? '',
             'PostalAddress.0.CountrySubentityCode.0._' => data_get($data, 'state')
-                ? (Code::states()->value(data_get($data, 'state')) ?? '')
+                ? (Code::states()->value(data_get($data, 'state')) ?? data_get($data, 'state'))
                 : Code::states()->value('Not Applicable'),
         ])->filter();
 

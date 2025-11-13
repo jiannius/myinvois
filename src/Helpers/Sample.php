@@ -22,20 +22,16 @@ class Sample
             ],
             'references' => [
                 [
-                    'reference' => 'E12345678912',
                     'type' => 'CUSTOMS',
+                    'value' => 'E12345678912',
                 ],
                 [
-                    'reference' => 'F23489723894',
                     'type' => 'FTA',
-                    'description' => 'ASEAN-Australia-New Zealand FTA (AANZFTA)',
+                    'value' => 'ASEAN-Australia-New Zealand FTA (AANZFTA)',
                 ],
                 [
-                    'reference' => 'E12345678912,E23456789123',
-                    'type' => 'K2',
-                ],
-                [
-                    'reference' => 'CIF',
+                    'type' => 'INCOTERMS',
+                    'value' => 'CIF',
                 ],
             ],
             'supplier' => [
