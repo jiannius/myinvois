@@ -66,7 +66,7 @@ class UBL
 
         if ($rate) {
             data_set($schema, 'Invoice.0.TaxExchangeRate.0.CalculationRate.0._', $rate);
-            data_set($schema, 'Invoice.0.TaxExchangeRate.0.SourceCurrencyCode.0._', 'DocumentCurrencyCode');
+            data_set($schema, 'Invoice.0.TaxExchangeRate.0.SourceCurrencyCode.0._', $currency);
             data_set($schema, 'Invoice.0.TaxExchangeRate.0.TargetCurrencyCode.0._', 'MYR');
         }
 
