@@ -427,7 +427,8 @@ class UBL
     public static function getDocumentContactSubschema($data)
     {
         $phone = data_get($data, 'phone');
-        $phone = $phone ? (string) str($phone)->start('+')->replace(' ', '') : 'NA';
+        $phone = $phone ? preg_replace('/[^0-9.]+/', '', $phone) : null;
+        $phone = $phone ? (string) str($phone)->start('+') : 'NA';
 
         return collect([
             'Contact.0.Telephone.0._' => $phone,
