@@ -93,27 +93,27 @@ class Myinvois
     public function getSettings($key = null)
     {
         $preprod = is_bool(data_get($this->settings, 'preprod')) ? data_get($this->settings, 'preprod') : (
-            is_bool(env('MYINVOIS_PREPROD')) ? env('MYINVOIS_PREPROD') : !app()->environment('production')
+            is_bool(config('services.myinvois.preprod')) ? config('services.myinvois.preprod') : !app()->environment('production')
         );
 
         $clientId = data_get($this->settings, 'client_id') ?? (
-            $preprod ? (env('MYINVOIS_PREPROD_CLIENT_ID') ?? env('MYINVOIS_CLIENT_ID')) : env('MYINVOIS_CLIENT_ID')
+            $preprod ? (config('services.myinvois.preprod_client_id') ?? config('services.myinvois.client_id')) : config('services.myinvois.client_id')
         );
 
         $clientSecret = data_get($this->settings, 'client_secret') ?? (
-            $preprod ? (env('MYINVOIS_PREPROD_CLIENT_SECRET') ?? env('MYINVOIS_CLIENT_SECRET')) : env('MYINVOIS_CLIENT_SECRET')
+            $preprod ? (config('services.myinvois.preprod_client_secret') ?? config('services.myinvois.client_secret')) : config('services.myinvois.client_secret')
         );
 
         $settings = [
             'client_id' => $clientId,
             'client_secret' => $clientSecret,
             'on_behalf_of' => data_get($this->settings, 'on_behalf_of'),
-            'private_key' => data_get($this->settings, 'private_key') ?? env('MYINVOIS_PRIVATE_KEY'),
-            'certificate' => data_get($this->settings, 'certificate') ?? env('MYINVOIS_CERTIFICATE'),
+            'private_key' => data_get($this->settings, 'private_key') ?? config('services.myinvois.private_key'),
+            'certificate' => data_get($this->settings, 'certificate') ?? config('services.myinvois.certificate'),
             'preprod' => $preprod,
         ];
 
-        if (data_get($settings, 'on_behalf_of') === env('MYINVOIS_CLIENT_TIN')) {
+        if (data_get($settings, 'on_behalf_of') === config('services.myinvois.client_tin')) {
             $settings['on_behalf_of'] = null;
         }
 
