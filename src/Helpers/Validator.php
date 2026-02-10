@@ -27,6 +27,7 @@ class Validator
             'document_type' => 'required',
             'document_version' => 'required',
             'currency' => 'required',
+            ...$this->getOriginalDocumentRules(),
             ...$this->getSupplierRules(),
             ...$this->getBuyerRules(),
             'subtotal' => 'required',
@@ -38,7 +39,7 @@ class Validator
             'line_items.*.classifications' => 'required|array|min:1',
             'line_items.*.description' => 'required',
             'line_items.*.unit_price' => 'required',
-            'line_items.*.subtotal' => 'required',
+            'line_items.*.subtotal' => data_get($this->document, 'is_consolidate') ? 'required|numeric|max:9999' : 'required|numeric',
             'line_items.*.taxes.*.code' => 'sometimes|required',
             'line_items.*.taxes.*.name' => 'sometimes|required',
         ];
@@ -53,6 +54,8 @@ class Validator
             'document_type.required' => 'Document type is required',
             'document_version.required' => 'Document version is required',
             'currency.required' => 'Currency is required',
+            'original_number.required' => 'Credit Note / Debit Note must have original document UUID',
+            'original_document_uuid.required' => 'Credit Note / Debit Note must have original document UUID',
             'supplier.name.required' => 'Supplier name is required',
             'supplier.tin.required' => 'Supplier TIN is required',
             'supplier.brn.required_without_all' => 'Either supplier BRN / NRIC / PASSPORT / ARMY is required',
@@ -93,8 +96,28 @@ class Validator
             'line_items.*.description.required' => 'Line item description is required',
             'line_items.*.unit_price.required' => 'Line item unit price is required',
             'line_items.*.subtotal.required' => 'Line item subtotal is required',
+            'line_items.*.subtotal.numeric' => 'Line item subtotal is invalid',
+            'line_items.*.subtotal.max' => 'Document with grand total greater than MYR 10,000 cannot be submitted as consolidated document',
             'line_items.*.taxes.*.code.required' => 'Line item tax code is required.',
             'line_items.*.taxes.*.name' => 'Line item tax name is required.',
+        ];
+    }
+
+    public function getOriginalDocumentRules()
+    {
+        $doctype = Code::documentTypes()->label(data_get($this->document, 'document_type'));
+
+        if (!in_array($doctype, [
+            'Credit Note',
+            'Debit Note',
+            'Self-billed Credit Note',
+            'Self-billed Debit Note',
+            'Self-billed Refund Note',
+        ])) return [];
+
+        return [
+            'original_number' => 'required',
+            'original_document_uuid' => 'required',
         ];
     }
 
@@ -138,17 +161,29 @@ class Validator
 
     public function getBuyerRules()
     {
+        $doctype = Code::documentTypes()->label(data_get($this->document, 'document_type'));
         $tintype = TinType::tryFrom(data_get($this->document, 'buyer.tin'));
+        $isConsolidate = data_get($this->document, 'is_consolidate');
 
-        $rules = [
-            'buyer.name' => 'required',
-            'buyer.tin' => 'required',
-        ];
-
-        if ($tintype) return $rules;
+        if ($tintype) {
+            if (in_array($doctype, ['Invoice', 'Credit Note', 'Debit Note', 'Refund Note']) && !$isConsolidate) {
+                return [
+                    'buyer.tin' => function ($attribute, $value, $fail) {
+                        $fail('Document with General TIN cannot be submitted as standard document');
+                    },
+                ];
+            }
+            else {
+                return [
+                    'buyer.name' => 'required',
+                    'buyer.tin' => 'required',
+                ];
+            }
+        }
 
         return [
-            ...$rules,
+            'buyer.name' => 'required',
+            'buyer.tin' => 'required',
             'buyer.brn' => 'required_without_all:buyer.nric,buyer.passport,buyer.army',
             'buyer.nric' => 'required_without_all:buyer.brn,buyer.passport,buyer.army',
             'buyer.passport' => 'required_without_all:buyer.brn,buyer.nric,buyer.army',
