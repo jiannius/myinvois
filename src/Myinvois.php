@@ -3,6 +3,7 @@
 namespace Jiannius\Myinvois;
 
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Jiannius\Myinvois\Helpers\Sample;
 use Jiannius\Myinvois\Helpers\Signature;
@@ -182,50 +183,33 @@ class Myinvois
     /**
      * Call the API
      */
-    public function callApi($uri, $method = 'GET', $data = [], $timeout = null) : mixed
+    public function callApi($uri, $method = 'GET', $data = [], $perMinute = null)
     {
         $method = strtolower($method);
         $token = $this->getToken();
 
         if (!$token) abort(500, 'Missing MyInvois API access token');
 
-        // check the completion time for last job
-        // apply timeout if necessary to deal with rate limiting
-        $key = 'myinvois_last_job_'.(string) str($uri)->replace('/', '_');
-        $cache = cache($key);
-        $result = null;
+        if ($perMinute) {
+            $timeout = 60 / $perMinute;
+            $throttleKey = 'myinvois.'.str($uri)->replace('/', '-')->slug()->toString();
+            $tooManyAttempts = RateLimiter::tooManyAttempts($throttleKey, $perMinute);
 
-        while (!$result) {
-            if (
-                $cache
-                && ($lastJobAt = data_get($cache, 'completed_at'))
-                && ($lastJobTimeout = data_get($cache, 'timeout'))
-                && ($nextJobAt = $lastJobAt && $timeout ? $lastJobAt->addSeconds($lastJobTimeout) : null)
-                && $nextJobAt->gt(now())
-            ) {
-                sleep($nextJobAt->diffInSeconds(now()));
+            if ($tooManyAttempts) {
+                sleep($timeout);
+                RateLimiter::clear($throttleKey);
             }
             else {
-                $endpoint = $this->getEndpoint($uri);
-                $result = Http::withToken($token)->$method($endpoint, $data);
-
-                if ($result->failed()) {
-                    throw_if($result->status() === 403, 'Permissions denied from MyInvois Portal');
-                    if ($callback = $this->failedCallback) $result = $callback($result);
-                }
-
-                if ($timeout) {
-                    cache([$key => [
-                        'endpoint' => $endpoint,
-                        'method' => $method,
-                        'completed_at' => now(),
-                        'timeout' => $timeout,
-                    ]]);
-                }
-                else {
-                    cache()->forget($key);
-                }
+                RateLimiter::increment($throttleKey);
             }
+        }
+
+        $endpoint = $this->getEndpoint($uri);
+        $result = Http::withToken($token)->$method($endpoint, $data);
+
+        if ($result->failed()) {
+            throw_if($result->status() === 403, 'Permissions denied from MyInvois Portal');
+            if ($callback = $this->failedCallback) $result = $callback($result);
         }
 
         return $result;
@@ -243,7 +227,7 @@ class Myinvois
                 'idValue' => $idValue,
                 'taxpayerName' => $taxpayerName,
             ],
-            timeout: 1,
+            perMinute: 60,
         );
 
         return data_get($api->json(), 'tin');
@@ -276,7 +260,7 @@ class Myinvois
         $api = $this->callApi(
             uri: 'documents/recent',
             data: $data,
-            timeout: 5,
+            perMinute: 12,
         );
 
         return $api->json();
@@ -293,7 +277,7 @@ class Myinvois
                 'pageNo' => $pageNo,
                 'pageSize' => $pageSize,
             ],
-            timeout: 1,
+            perMinute: 60,
         );
 
         foreach (data_get($api->json(), 'documentSummary') ?? [] as $response) {
@@ -310,7 +294,7 @@ class Myinvois
     {
         $api = $this->callApi(
             uri: 'documents/'.$uid.'/raw',
-            timeout: 1,
+            perMinute: 60,
         );
 
         return $api->json();
@@ -323,7 +307,7 @@ class Myinvois
     {
         $api = $this->callApi(
             uri: 'documents/'.$uid.'/details',
-            timeout: 1,
+            perMinute: 60,
         );
 
         $this->updateMyinvoisDocuments($api->json());
@@ -339,7 +323,7 @@ class Myinvois
         $api = $this->callApi(
             uri: 'documents/search',
             data: $data,
-            timeout: 5,
+            perMinute: 12,
         );
 
         return $api->json();
@@ -377,7 +361,7 @@ class Myinvois
                     ];
                 })->toArray(),
             ],
-            timeout: 1,
+            perMinute: 60,
         );
 
         if ($myinvoisDocuments = $this->createMyinvoisDocuments($api->json(), $documents)) {
@@ -402,7 +386,7 @@ class Myinvois
                 'status' => 'cancelled',
                 'reason' => $reason,
             ],
-            timeout: 5,
+            perMinute: 12,
         );
 
         $this->updateMyinvoisDocuments([...$api->json(), 'reason' => $reason]);
@@ -421,7 +405,7 @@ class Myinvois
                 'status' => 'rejected',
                 'reason' => $reason,
             ],
-            timeout: 5,
+            perMinute: 12,
         );
 
         return $api->json();
