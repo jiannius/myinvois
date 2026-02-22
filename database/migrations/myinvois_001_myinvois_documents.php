@@ -18,6 +18,7 @@ return new class extends Migration
             $table->string('document_uuid')->nullable();
             $table->string('submission_uid')->nullable();
             $table->string('document_number')->nullable();
+            $table->string('consolidate_number')->nullable();
             $table->string('status')->nullable();
             $table->json('request')->nullable();
             $table->json('response')->nullable();

@@ -438,6 +438,7 @@ class Myinvois
                         'document_uuid' => data_get($data, 'uuid'),
                         'submission_uid' => $submissionUid,
                         'document_number' => data_get($lineItem, 'description'),
+                        'consolidate_number' => data_get($document, 'number'),
                         'status' => 'submitted',
                         'is_preprod' => $this->getSettings('preprod'),
                     ]));

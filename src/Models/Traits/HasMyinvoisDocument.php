@@ -70,8 +70,7 @@ trait HasMyinvoisDocument
     /**
      * Scope the query to only include myinvois documents that are submitted
      */
-    #[Scope]
-    public function withSubmittedMyinvoisDocument($query, $submitted = true, $preprod = false) : void
+    public function scopeWithSubmittedMyinvoisDocument($query, $submitted = true, $preprod = false) : void
     {
         $status = [Status::SUBMITTED, Status::VALID];
 
