@@ -39,7 +39,8 @@ class Validator
             'line_items.*.classifications' => 'required|array|min:1',
             'line_items.*.description' => 'required',
             'line_items.*.unit_price' => 'required',
-            'line_items.*.subtotal' => data_get($this->document, 'is_consolidate') ? 'required|numeric|max:9999' : 'required|numeric',
+            'line_items.*.subtotal' => 'required|numeric',
+            // 'line_items.*.subtotal' => data_get($this->document, 'is_consolidate') ? 'required|numeric|max:9999' : 'required|numeric',
             'line_items.*.taxes.*.code' => 'sometimes|required',
             'line_items.*.taxes.*.name' => 'sometimes|required',
         ];
