@@ -82,6 +82,8 @@ class UBL
 
         throw_if(!$supplier, \Exception::class, 'Missing supplier');
 
+        $supplier = collect($supplier)->map(fn ($val) => self::sanitize($val))->toArray();
+
         data_set($schema, 'Invoice.0.AccountingSupplierParty.0.Party.0.PartyLegalEntity.0.RegistrationName.0._', data_get($supplier, 'name'));
 
         foreach (self::getDocumentTINSubschema($supplier) as $key => $val) {
@@ -125,6 +127,8 @@ class UBL
         $buyer = data_get($data, 'buyer');
 
         throw_if(!$buyer, \Exception::class, 'Missing buyer');
+
+        $buyer = collect($buyer)->map(fn ($val) => self::sanitize($val))->toArray();
 
         data_set($schema, 'Invoice.0.AccountingCustomerParty.0.Party.0.PartyLegalEntity.0.RegistrationName.0._', data_get($buyer, 'name'));
 
@@ -178,8 +182,8 @@ class UBL
         if (!$refs) return $schema;
 
         foreach ($refs as $i => $ref) {
-            $type = data_get($ref, 'type');
-            $value = str(data_get($ref, 'value'))->replace(' ', '')->trim()->toString();
+            $type = self::sanitize(data_get($ref, 'type'));
+            $value = self::sanitize(data_get($ref, 'value'));
 
             if (!$type || !$value) continue;
 
@@ -210,7 +214,7 @@ class UBL
 
         if (!$shipping) return $schema;
 
-        if ($name = data_get($shipping, 'name')) {
+        if ($name = self::sanitize(data_get($shipping, 'name'))) {
             data_set($schema, 'Invoice.0.Delivery.0.DeliveryParty.0.PartyLegalEntity.0.RegistrationName.0._', $name);
         }
 
@@ -222,7 +226,7 @@ class UBL
             data_set($schema, 'Invoice.0.Delivery.0.DeliveryParty.0.'.$key, $val);
         }
 
-        if ($ref = data_get($shipping, 'reference')) {
+        if ($ref = self::sanitize(data_get($shipping, 'reference'))) {
             data_set($schema, 'Invoice.0.Delivery.0.Shipment.0.ID.0._', $ref);
         }
 
@@ -232,7 +236,7 @@ class UBL
             data_set($schema, 'Invoice.0.Delivery.0.Shipment.0.FreightAllowanceCharge.0.Amount.0.currencyID', $currency);
         }
 
-        if ($desc = data_get($shipping, 'description')) {
+        if ($desc = self::sanitize(data_get($shipping, 'description'))) {
             data_set($schema, 'Invoice.0.Delivery.0.Shipment.0.FreightAllowanceCharge.0.AllowanceChargeReason.0._', $desc);
         }
 
@@ -247,7 +251,7 @@ class UBL
         $prepaid = data_get($data, 'prepaid');
         $currency = data_get($data, 'currency');
 
-        if ($ref = data_get($prepaid, 'reference')) {
+        if ($ref = self::sanitize(data_get($prepaid, 'reference'))) {
             data_set($schema, 'Invoice.0.PrepaidPayment.0.ID.0._', $ref);
         }
 
@@ -270,11 +274,11 @@ class UBL
      */
     public static function getDocumentPaymentModeSchema($schema, $data)
     {
-        if ($paymode = data_get($data, 'payment_mode')) {
+        if ($paymode = self::sanitize(data_get($data, 'payment_mode'))) {
             data_set($schema, 'Invoice.0.PaymentMeans.0.PaymentMeansCode.0._', $paymode);
         }
 
-        if ($payterm = data_get($data, 'payment_term')) {
+        if ($payterm = self::sanitize(data_get($data, 'payment_term'))) {
             data_set($schema, 'Invoice.0.PaymentTerms.0.Note.0._', $payterm);
         }
 
@@ -301,7 +305,7 @@ class UBL
                 data_set($schema, 'Invoice.0.AllowanceCharge.'.$i.'.Amount.0.currencyID', $currency);
             }
 
-            if ($desc = data_get($item, 'description')) {
+            if ($desc = self::sanitize(data_get($item, 'description'))) {
                 data_set($schema, 'Invoice.0.AllowanceCharge.'.$i.'.AllowanceChargeReason.0._', $desc);
             }
         }
@@ -351,7 +355,7 @@ class UBL
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.InvoicedQuantity.0.unitCode', $uom);
             }
 
-            data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.Description.0._', data_get($item, 'description'));
+            data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.Description.0._', self::sanitize(data_get($item, 'description')));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Price.0.PriceAmount.0._', data_get($item, 'unit_price'));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Price.0.PriceAmount.0.currencyID', $currency);
             
@@ -386,7 +390,7 @@ class UBL
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.AllowanceCharge.0.Amount.0.currencyID', $currency);
                 
                 if (data_get($item, 'discount.description')) {
-                    data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.AllowanceCharge.0.AllowanceChargeReason.0._', data_get($item, 'discount.description'));
+                    data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.AllowanceCharge.0.AllowanceChargeReason.0._', self::sanitize(data_get($item, 'discount.description')));
                 }
 
                 if (data_get($item, 'discount.rate')) {
@@ -432,7 +436,7 @@ class UBL
 
         return collect([
             'Contact.0.Telephone.0._' => $phone,
-            'Contact.0.ElectronicMail.0._' => data_get($data, 'email') ?? '',
+            'Contact.0.ElectronicMail.0._' => self::sanitize(data_get($data, 'email')) ?? '',
         ])->filter()->toArray();
     }
 
@@ -441,6 +445,8 @@ class UBL
      */
     public static function getDocumentAddressSubschema($data)
     {
+        $data = collect($data)->map(fn ($val) => self::sanitize($val))->toArray();
+
         $schema = collect([
             'PostalAddress.0.AddressLine.0.Line.0._' => data_get($data, 'address_line_1') ?? 'NA',
             'PostalAddress.0.AddressLine.1.Line.0._' => data_get($data, 'address_line_2') ?? '',
@@ -487,7 +493,7 @@ class UBL
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxScheme.0.ID.0.schemeID', 'UN/ECE 5153');
             $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxScheme.0.ID.0.schemeAgencyID', '6');
 
-            if ($reason = data_get($tax, 'exemption_reason')) {
+            if ($reason = self::sanitize(data_get($tax, 'exemption_reason'))) {
                 $schema->put('TaxTotal.0.TaxSubtotal.'.$i.'.TaxCategory.0.TaxExemptionReason.0._', $reason);
             }
 
@@ -509,6 +515,34 @@ class UBL
         }
 
         return $schema;
+    }
+
+    /**
+     * Sanitize string value
+     */
+    public static function sanitize($string)
+    {
+        if (!$string) return $string;
+
+        // Remove invisible/zero-width characters
+        $string = preg_replace('/[\x{200B}-\x{200D}\x{FEFF}]/u', '', $string);
+
+        // Remove control characters
+        $string = preg_replace('/[\x00-\x1F\x7F]/u', '', $string);
+
+        // Replace all types of spaces with regular space
+        $string = preg_replace('/\p{Z}+/u', ' ', $string);
+
+        // Normalize multiple spaces
+        $string = preg_replace('/\s+/', ' ', $string);
+
+        // remove all leading and ending spaces
+        $string = trim($string);
+
+        // make sure the string is in utf-8
+        $string = mb_convert_encoding($string, 'UTF-8', mb_detect_encoding($string, "UTF-8, ISO-8859-1, Windows-1252", true));
+
+        return $string;
     }
 
     /**
