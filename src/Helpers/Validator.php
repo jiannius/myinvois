@@ -167,7 +167,7 @@ class Validator
         $isConsolidate = data_get($this->document, 'is_consolidate');
 
         if ($tintype) {
-            if (in_array($doctype, ['Invoice', 'Credit Note', 'Debit Note', 'Refund Note']) && !$isConsolidate) {
+            if ($tintype === TinType::GENERAL_PUBLIC && in_array($doctype, ['Invoice', 'Credit Note', 'Debit Note', 'Refund Note']) && !$isConsolidate) {
                 return [
                     'buyer.tin' => function ($attribute, $value, $fail) {
                         $fail('Document with General TIN cannot be submitted as standard document');
