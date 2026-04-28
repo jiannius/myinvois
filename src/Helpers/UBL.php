@@ -358,8 +358,8 @@ class UBL
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.Description.0._', self::sanitize(data_get($item, 'description')));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Price.0.PriceAmount.0._', data_get($item, 'unit_price'));
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Price.0.PriceAmount.0.currencyID', $currency);
-            
-            if ($country = data_get($item, 'country')) {
+
+            if ($country = Code::countries()->value(data_get($item, 'country'))) {
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.OriginCountry.0.IdentificationCode.0._', $country);
             }
 
