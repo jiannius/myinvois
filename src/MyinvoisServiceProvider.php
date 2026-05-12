@@ -16,5 +16,6 @@ class MyinvoisServiceProvider extends ServiceProvider
     public function boot() : void
     {
         $this->app->bind('myinvois', fn($app) => new \Jiannius\Myinvois\Myinvois());
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
     }
 }
