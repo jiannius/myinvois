@@ -34,6 +34,8 @@ class Code
 
             public function get($needle)
             {
+                if ($needle === null) return null;
+
                 if ($this->codeType === 'countries') {
                     $needle = strtoupper($needle);
                 }

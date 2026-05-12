@@ -25,7 +25,9 @@ trait HasMyinvoisDocument
      */
     protected static function bootHasMyinvoisDocument()
     {
-        static::observe(HasMyinvoisDocumentObserver::class);
+        // Deferred via whenBooted because L13 forbids `new static` while $booting is set,
+        // and observe() instantiates the model. whenBooted runs after boot completes.
+        static::whenBooted(fn () => static::observe(HasMyinvoisDocumentObserver::class));
     }
 
     /**

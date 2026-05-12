@@ -3,14 +3,16 @@
     "description": "Jiannius Myinvois SDK",
     "type": "library",
     "require": {
-        "doctrine/dbal": "^3.6",
-        "symfony/http-client": "^6.0",
-        "laravel/pail": "^1.0",
+        "php": "^8.3",
+        "illuminate/support": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/http": "^13.0",
+        "symfony/http-client": "^7.0",
         "noki/laravel-xml-converter": "^1.0",
         "simplesoftwareio/simple-qrcode": "^4.2"
     },
     "require-dev": {
-        "orchestra/testbench": "^8.0"
+        "orchestra/testbench": "^11.0"
     },
     "license": "MIT",
     "autoload": {
