@@ -24,6 +24,21 @@ class MyinvoisDocument extends Model
     ];
 
     /**
+     * The model class to use for myinvois documents. Host apps that want to
+     * extend this model can call MyinvoisDocument::useModel(MyClass::class)
+     * from a service provider.
+     */
+    public static string $useModel = self::class;
+
+    /**
+     * Set the model class to use for myinvois documents
+     */
+    public static function useModel(string $model) : void
+    {
+        static::$useModel = $model;
+    }
+
+    /**
      * The booted method for model
      */
     protected static function booted() : void

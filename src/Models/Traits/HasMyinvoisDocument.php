@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Jiannius\Myinvois\Enums\Status;
+use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Models\Observers\HasMyinvoisDocumentObserver;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
@@ -35,7 +36,7 @@ trait HasMyinvoisDocument
      */
     public function myinvoisDocuments() : MorphMany
     {
-        return $this->morphMany(\App\Models\MyinvoisDocument::class, 'parent')->where(fn ($q) => $q
+        return $this->morphMany(MyinvoisDocument::$useModel, 'parent')->where(fn ($q) => $q
             ->where('is_preprod', false)->orWhereNull('is_preprod')
         );
     }
@@ -45,7 +46,7 @@ trait HasMyinvoisDocument
      */
     public function preprodMyinvoisDocuments() : MorphMany
     {
-        return $this->morphMany(\App\Models\MyinvoisDocument::class, 'parent')
+        return $this->morphMany(MyinvoisDocument::$useModel, 'parent')
             ->where('is_preprod', true);
     }
 
@@ -54,7 +55,7 @@ trait HasMyinvoisDocument
      */
     public function latestMyinvoisDocument() : MorphOne
     {
-        return $this->morphOne(\App\Models\MyinvoisDocument::class, 'parent')->where(fn ($q) => $q
+        return $this->morphOne(MyinvoisDocument::$useModel, 'parent')->where(fn ($q) => $q
             ->where('is_preprod', false)->orWhereNull('is_preprod')
         )->latestOfMany();
     }
@@ -64,7 +65,7 @@ trait HasMyinvoisDocument
      */
     public function preprodLatestMyinvoisDocument() : MorphOne
     {
-        return $this->morphOne(\App\Models\MyinvoisDocument::class, 'parent')
+        return $this->morphOne(MyinvoisDocument::$useModel, 'parent')
             ->where('is_preprod', true)
             ->latestOfMany();
     }

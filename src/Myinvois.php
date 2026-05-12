@@ -427,6 +427,7 @@ class Myinvois
         $classifications = collect($documents)->pluck('line_items')->collapse()->pluck('classifications')->collapse()->unique()->values();
         $isConsolidated = $classifications->count() === 1 && data_get($classifications->first(), 'code') === '004';
         $myinvoisDocuments = collect();
+        $model = MyinvoisDocument::$useModel;
 
         foreach ($accepted as $data) {
             if ($isConsolidated) {
@@ -434,7 +435,7 @@ class Myinvois
                 $lineItems = data_get($document, 'line_items', []);
 
                 foreach ($lineItems as $lineItem) {
-                    $myinvoisDocuments->push(MyinvoisDocument::create([
+                    $myinvoisDocuments->push($model::create([
                         'document_uuid' => data_get($data, 'uuid'),
                         'submission_uid' => $submissionUid,
                         'document_number' => data_get($lineItem, 'description'),
@@ -445,7 +446,7 @@ class Myinvois
                 }
             }
             else {
-                $myinvoisDocuments->push(MyinvoisDocument::create([
+                $myinvoisDocuments->push($model::create([
                     'document_uuid' => data_get($data, 'uuid'),
                     'submission_uid' => $submissionUid,
                     'document_number' => data_get($data, 'invoiceCodeNumber'),
@@ -461,7 +462,7 @@ class Myinvois
         while ($try <= $max) {
             sleep(2);
             $this->getSubmission($submissionUid);
-            if (MyinvoisDocument::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
+            if ($model::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
             else $try = $max + 1;
         }
 
@@ -477,7 +478,8 @@ class Myinvois
 
         $documentUuid = data_get($response, 'uuid');
         $submissionUid = data_get($response, 'submissionUid');
-        $documents = MyinvoisDocument::query()
+        $model = MyinvoisDocument::$useModel;
+        $documents = $model::query()
             ->where('document_uuid', $documentUuid)
             ->when($submissionUid, fn ($q) => $q->where('submission_uid', $submissionUid));
 
