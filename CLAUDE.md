@@ -67,3 +67,7 @@ Two base URLs hardcoded in `Myinvois::$baseUrl`: `prod` (`api.myinvois.hasil.gov
 - Document shape changes must stay backwards-compatible with the flat array contract in `Helpers/Sample.php` — that's the documented input format for callers.
 - The signing flow is order-sensitive: `UBL::build` must run before `Signature::build`, and the JSON serialization inside `Signature::toJson` must not be reformatted.
 - `Validator.php` runs Laravel validation against the flat input shape (not the built UBL). Call `app('myinvois')->validator($doc)` before submission to surface user-friendly errors.
+
+## LHDN policy questions
+
+For anything beyond what this package encodes — current code lists, validation rules per doc type, mandate phase / rollout dates, sector-specific exemptions — see `docs/lhdn-references.md` for authoritative URLs and the load-bearing invariants this codebase depends on. Don't infer LHDN policy from the code alone; fetch from their SDK when in doubt.

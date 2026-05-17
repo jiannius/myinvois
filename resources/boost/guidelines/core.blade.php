@@ -183,6 +183,15 @@ Special TINs (general public, foreign buyer, government) live in `Jiannius\Myinv
 - **Preprod vs prod isolation** — preprod docs auto-route to `preprod.myinvois.hasil.gov.my`; status columns are kept separate. The package toggles preprod based on environment, but you can force it with `setPreprod(true|false)`.
 - **No automated test suite** — validate end-to-end against the preprod sandbox before touching prod. There is no local dry-run mode.
 
+### LHDN policy beyond this package
+
+This guideline covers using the package. For questions about LHDN's own rules — current classification / payment-mode / MSIC code lists, validation rules per document type, mandate rollout phases, sector exemptions — go to the source rather than guessing:
+
+- SDK home: https://sdk.myinvois.hasil.gov.my (start here for code lists, validation specs, API reference)
+- Production portal: https://myinvois.hasil.gov.my (preprod sandbox: https://preprod.myinvois.hasil.gov.my)
+
+The package's repo also keeps a short `docs/lhdn-references.md` with the load-bearing invariants the code depends on (72h cancel window, classification `004` semantics, General Public TIN rules, etc.) — useful if you're touching the package itself.
+
 ### Preflight checklist when wiring this into a feature
 
 - Configure client id, client secret, private key (PEM string), certificate (PEM string).
