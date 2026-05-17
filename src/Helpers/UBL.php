@@ -7,6 +7,30 @@ use Noki\XmlConverter\Convert;
 class UBL
 {
     /**
+     * Determine whether a document is a consolidated e-invoice.
+     *
+     * A document is consolidated if either:
+     *   - the explicit `is_consolidate` flag is truthy, or
+     *   - every line item has exactly one classification with code '004'
+     *     (the LHDN marker code for "consolidated e-invoice").
+     *
+     * The flag form is preferred; the classification form is kept for
+     * backwards compatibility with callers that pre-date the flag.
+     */
+    public static function isConsolidated($document) : bool
+    {
+        if (data_get($document, 'is_consolidate')) return true;
+
+        $codes = collect(data_get($document, 'line_items', []))
+            ->pluck('classifications')
+            ->collapse()
+            ->pluck('code')
+            ->unique();
+
+        return $codes->count() === 1 && $codes->first() === '004';
+    }
+
+    /**
      * Build the UBL document schema
      */
     public static function build($data)
@@ -346,6 +370,7 @@ class UBL
     public static function getDocumentLineItemsSchema($schema, $data)
     {
         $currency = data_get($data, 'currency');
+        $isConsolidated = self::isConsolidated($data);
 
         foreach (data_get($data, 'line_items', []) as $i => $item) {
             data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.ID.0._', (string) str($i + 1)->padLeft(3, '0'));
@@ -363,13 +388,21 @@ class UBL
                 data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.OriginCountry.0.IdentificationCode.0._', $country);
             }
 
-            foreach (collect(data_get($item, 'classifications'))->concat(
-                collect(data_get($item, 'tariffs'))->map(fn ($tariff) => [...$tariff, 'is_tariff' => true])
-            ) as $j => $classification) {
-                $code = data_get($classification, 'code');
-                $code = Code::classifications()->value($code);
-                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0._', $code);
-                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0.listID', data_get($classification, 'is_tariff') ? 'PTC' : 'CLASS');
+            if ($isConsolidated) {
+                // Consolidated e-invoices must emit a single classification with code 004
+                // (LHDN rule). Per-line classifications and tariffs are ignored here.
+                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.0.ItemClassificationCode.0._', '004');
+                data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.0.ItemClassificationCode.0.listID', 'CLASS');
+            }
+            else {
+                foreach (collect(data_get($item, 'classifications'))->concat(
+                    collect(data_get($item, 'tariffs'))->map(fn ($tariff) => [...$tariff, 'is_tariff' => true])
+                ) as $j => $classification) {
+                    $code = data_get($classification, 'code');
+                    $code = Code::classifications()->value($code);
+                    data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0._', $code);
+                    data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0.listID', data_get($classification, 'is_tariff') ? 'PTC' : 'CLASS');
+                }
             }
 
             foreach (self::getDocumentTaxesSubschema(data_get($item, 'taxes', []), $currency) as $key => $val) {

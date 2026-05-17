@@ -23,8 +23,14 @@ Submission pipeline inside `submitDocuments()`:
 1. `UBL::build($document)` — converts the flat normalized array (see `Helpers/Sample.php` for the canonical shape) into the deep nested UBL `Invoice.0.…` structure expected by MyInvois. Built up section-by-section via `getDocument*Schema()` methods.
 2. `Signature::build($document, $privateKey, $certificate)` — computes XAdES enveloped signature: cert digest, doc digest (canonical minified JSON), `openssl_sign` with SHA256, signed-properties digest, then populates the `UBLExtensions` and `Signature` blocks. The signing JSON must use `JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES` with no whitespace — `Signature::toJson()` is the single source of truth.
 3. JSON is base64-encoded with a SHA256 hash and POSTed to `documentsubmissions`.
-4. `createMyinvoisDocuments()` persists one `MyinvoisDocument` row per accepted document — except for consolidated submissions (all line item classifications are code `004`), where one row is created per *line item* with the line description as `document_number` and the parent invoice number as `consolidate_number`.
+4. `createMyinvoisDocuments()` persists one `MyinvoisDocument` row per accepted document — except for consolidated submissions, where one row is created per *line item* with the line description as `document_number` and the parent invoice number as `consolidate_number`. Detection runs per-document via `UBL::isConsolidated($document)`.
 5. After submission, polls `getSubmission()` up to 3 times with 2s sleeps to flip `submitted` → `valid`/`invalid` immediately.
+
+## Consolidated e-invoices
+
+`is_consolidate` (boolean, on the top-level document) is the canonical signal that a document is a consolidated e-invoice. Callers setting it to `true` don't need to populate `line_items[].classifications` — `UBL::getDocumentLineItemsSchema()` automatically emits a single `004` classification with `listID=CLASS` on every line, and skips any tariffs. The legacy contract (every line tagged with classification `004`) still works and is treated identically — `UBL::isConsolidated($document)` recognizes both. The flag form is preferred for new callers.
+
+Detection is **per-document** (not per-submission-batch): mixed batches where some documents are consolidated and others aren't are persisted correctly.
 
 ## UBL builder conventions
 

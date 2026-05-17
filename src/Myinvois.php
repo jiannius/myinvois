@@ -423,18 +423,14 @@ class Myinvois
 
         if (!$accepted) return;
 
-        // if all line items classifications are 004, then is a consolidated submission
-        $classifications = collect($documents)->pluck('line_items')->collapse()->pluck('classifications')->collapse()->unique()->values();
-        $isConsolidated = $classifications->count() === 1 && data_get($classifications->first(), 'code') === '004';
         $myinvoisDocuments = collect();
         $model = MyinvoisDocument::$useModel;
 
         foreach ($accepted as $data) {
-            if ($isConsolidated) {
-                $document = collect($documents)->firstWhere('number', data_get($data, 'invoiceCodeNumber'));
-                $lineItems = data_get($document, 'line_items', []);
+            $document = collect($documents)->firstWhere('number', data_get($data, 'invoiceCodeNumber'));
 
-                foreach ($lineItems as $lineItem) {
+            if (UBL::isConsolidated($document)) {
+                foreach (data_get($document, 'line_items', []) as $lineItem) {
                     $myinvoisDocuments->push($model::create([
                         'document_uuid' => data_get($data, 'uuid'),
                         'submission_uid' => $submissionUid,
