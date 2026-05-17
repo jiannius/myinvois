@@ -67,6 +67,7 @@ Two base URLs hardcoded in `Myinvois::$baseUrl`: `prod` (`api.myinvois.hasil.gov
 - Document shape changes must stay backwards-compatible with the flat array contract in `Helpers/Sample.php` — that's the documented input format for callers.
 - The signing flow is order-sensitive: `UBL::build` must run before `Signature::build`, and the JSON serialization inside `Signature::toJson` must not be reformatted.
 - `Validator.php` runs Laravel validation against the flat input shape (not the built UBL). Call `app('myinvois')->validator($doc)` before submission to surface user-friendly errors.
+- The Laravel Boost AI guideline at `resources/boost/guidelines/core.blade.php` is host-app-facing documentation, picked up by `boost:install` in any host project. Keep it in sync when changing the public API surface (`Myinvois` methods, the `HasMyinvoisDocument` trait, the document input contract). Validate with the Blade compiler before tagging — `<code-snippet>` blocks must be wrapped in `@verbatim` / `@endverbatim`.
 
 ## LHDN policy questions
 
