@@ -95,6 +95,15 @@ class ValidatorTest extends TestCase
     }
 
     #[Test]
+    public function a_consolidated_document_with_004_on_every_line_passes() : void
+    {
+        // classifications are mandatory on every line; for consolidated it is 004
+        $v = $this->validate(DocumentFixture::consolidated());
+
+        $this->assertTrue($v->passes(), $v->errors()->first());
+    }
+
+    #[Test]
     public function an_invalid_country_is_rejected_by_the_closure_rule() : void
     {
         $v = $this->validate(DocumentFixture::invoice(['supplier' => ['country' => 'Atlantis']]));

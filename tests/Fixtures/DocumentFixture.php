@@ -123,18 +123,21 @@ class DocumentFixture
     }
 
     /**
-     * A consolidated invoice via the canonical `is_consolidate` flag.
+     * A consolidated invoice: the `is_consolidate` flag set, and every line
+     * carries the mandatory 004 classification (consolidated e-invoice).
      */
     public static function consolidated(array $overrides = []) : array
     {
         $doc = static::invoice();
-        unset($doc['line_items'][0]['classifications'], $doc['line_items'][0]['tariffs']);
+        unset($doc['line_items'][0]['tariffs']);
         $doc['is_consolidate'] = true;
+        $doc['line_items'][0]['classifications'] = [['code' => '004']];
         $doc['line_items'][1] = [
             'qty' => 1,
             'description' => 'Receipt 1001-2000',
             'unit_price' => 300,
             'subtotal' => 300,
+            'classifications' => [['code' => '004']],
         ];
 
         return array_replace_recursive($doc, $overrides);

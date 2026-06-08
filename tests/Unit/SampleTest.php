@@ -21,4 +21,13 @@ class SampleTest extends TestCase
         $this->assertSame('EI00000000020', $doc['buyer']['tin']); // foreign buyer
         $this->assertCount(1, $doc['line_items']);
     }
+
+    #[Test]
+    public function the_line_uom_is_resolved_to_a_unit_code() : void
+    {
+        $doc = Sample::build();
+
+        // 'outfit' -> unit code '11', not the Code lookup object
+        $this->assertSame('11', $doc['line_items'][0]['uom']);
+    }
 }

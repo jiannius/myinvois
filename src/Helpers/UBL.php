@@ -398,10 +398,17 @@ class UBL
                 foreach (collect(data_get($item, 'classifications'))->concat(
                     collect(data_get($item, 'tariffs'))->map(fn ($tariff) => [...$tariff, 'is_tariff' => true])
                 ) as $j => $classification) {
+                    $isTariff = data_get($classification, 'is_tariff');
                     $code = data_get($classification, 'code');
-                    $code = Code::classifications()->value($code);
+
+                    // listID=CLASS values come from the MyInvois classification list
+                    // (001-045) so resolve label->code; listID=PTC values are
+                    // Harmonized System / customs tariff codes (e.g. 9800.00.0010)
+                    // and must be emitted verbatim, not looked up in the CLASS list.
+                    $code = $isTariff ? $code : Code::classifications()->value($code);
+
                     data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0._', $code);
-                    data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0.listID', data_get($classification, 'is_tariff') ? 'PTC' : 'CLASS');
+                    data_set($schema, 'Invoice.0.InvoiceLine.'.$i.'.Item.0.CommodityClassification.'.$j.'.ItemClassificationCode.0.listID', $isTariff ? 'PTC' : 'CLASS');
                 }
             }
 

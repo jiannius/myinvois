@@ -114,7 +114,7 @@ class Sample
             'line_items' => [
                 [
                     'qty' => 1,
-                    'uom' => Code::units('outfit'),
+                    'uom' => Code::units()->value('outfit'),
                     'description' => 'Line item 1 description',
                     'unit_price' => 500.00,
                     'country' => null,

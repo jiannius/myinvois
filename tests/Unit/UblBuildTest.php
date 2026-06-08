@@ -172,10 +172,11 @@ class UblBuildTest extends TestCase
     public function it_maps_line_classifications_and_tariffs() : void
     {
         $c = 'Invoice.0.InvoiceLine.0.Item.0.CommodityClassification.';
-        // classification 022 -> resolved code, listID CLASS
+        // classification 022 -> resolved against the CLASS list, listID CLASS
         $this->assertSame('022', $this->node($c.'0.ItemClassificationCode.0._'));
         $this->assertSame('CLASS', $this->node($c.'0.ItemClassificationCode.0.listID'));
-        // tariff -> listID PTC (code looked up in classifications map, hence null here)
+        // tariff -> HS/customs code emitted verbatim, listID PTC
+        $this->assertSame('9999.00.00', $this->node($c.'1.ItemClassificationCode.0._'));
         $this->assertSame('PTC', $this->node($c.'1.ItemClassificationCode.0.listID'));
     }
 
@@ -253,6 +254,21 @@ class UblBuildTest extends TestCase
     public function legacy_004_contract_is_treated_as_consolidated() : void
     {
         $ubl = UBL::build(DocumentFixture::legacy004());
+        $c = 'Invoice.0.InvoiceLine.0.Item.0.CommodityClassification.';
+
+        $this->assertSame('004', data_get($ubl, $c.'0.ItemClassificationCode.0._'));
+        $this->assertSame('CLASS', data_get($ubl, $c.'0.ItemClassificationCode.0.listID'));
+    }
+
+    #[Test]
+    public function the_flag_emits_004_even_when_a_line_has_no_classifications() : void
+    {
+        // build-side convenience: is_consolidate => true forces 004 on every
+        // line regardless of what classifications the caller supplied
+        $doc = DocumentFixture::invoice(['is_consolidate' => true]);
+        unset($doc['line_items'][0]['classifications'], $doc['line_items'][0]['tariffs']);
+
+        $ubl = UBL::build($doc);
         $c = 'Invoice.0.InvoiceLine.0.Item.0.CommodityClassification.';
 
         $this->assertSame('004', data_get($ubl, $c.'0.ItemClassificationCode.0._'));
