@@ -20,6 +20,14 @@
             "Jiannius\\Myinvois\\": "src/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Jiannius\\Myinvois\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "@php vendor/bin/phpunit"
+    },
     "authors": [
         {
             "name": "TJ",

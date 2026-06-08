@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Laravel package (PSR-4 `Jiannius\Myinvois\`) that integrates with the Malaysian LHDN MyInvois e-invoicing API. It builds UBL 2.1 JSON invoice documents, signs them with XAdES, submits them to MyInvois, and tracks lifecycle state in an `myinvois_documents` table. There are no tests, no build step, and no lint config — it's a library consumed by host Laravel apps. Auto-discovered via `MyinvoisServiceProvider`, which binds the singleton-style `myinvois` container key to a fresh `Myinvois` instance.
+A Laravel package (PSR-4 `Jiannius\Myinvois\`) that integrates with the Malaysian LHDN MyInvois e-invoicing API. It builds UBL 2.1 JSON invoice documents, signs them with XAdES, submits them to MyInvois, and tracks lifecycle state in an `myinvois_documents` table. There is a PHPUnit test suite (`composer test`, see "Testing" below) but no build step and no lint config — it's a library consumed by host Laravel apps. Auto-discovered via `MyinvoisServiceProvider`, which binds the singleton-style `myinvois` container key to a fresh `Myinvois` instance.
 
 ## Entry point and call flow
 
@@ -61,9 +61,15 @@ Code::states()->get('Kuala Lumpur');    // auto-prefixes 'Wilayah Persekutuan'
 
 Two base URLs hardcoded in `Myinvois::$baseUrl`: `prod` (`api.myinvois.hasil.gov.my`) and `preprod`. The `preprod` flag also controls the validation share-link host in `MyinvoisDocument::getValidationLinkAttribute()`. `getEndpoint()` prepends `/api/v1.0/` unless the URI starts with `/` (only the OAuth `/connect/token` endpoint uses the bare form).
 
+## Testing
+
+PHPUnit (not Pest — Pest's latest caps at PHPUnit ^12, this package is on PHPUnit 13 via `testbench` 11 / Laravel 13). Run `composer test` or `vendor/bin/phpunit`. Suites: `tests/Unit` (pure helpers — `Code`, `UBL` build/restore/sanitize, `Signature`, `Validator`, enums, all no-network) and `tests/Feature` (testbench + in-memory sqlite — model casts/scopes, the `HasMyinvoisDocument` trait, observers, and the `Myinvois` API layer / `submitDocuments` pipeline under `Http::fake()`). `phpunit.xml` runs with `failOnWarning`/`failOnRisky`.
+
+Fixtures in `tests/Fixtures/`: `DocumentFixture` (deterministic flat-array inputs — no `now()`/`time()`, unlike `Helpers/Sample.php`), `CertFixture` (throwaway RSA keypair + self-signed cert, memoised per process so signature digests are reproducible), and `Order` (a polymorphic parent model using the trait). Signature tests freeze time with `Carbon::setTestNow`. The suite covers the build/sign/persist logic locally, but true end-to-end acceptance still requires the preprod MyInvois sandbox via a host app — there is no local way to dry-run an actual submission.
+
 ## Things to know before editing
 
-- No test suite exists despite `orchestra/testbench` being in `require-dev`. Validate changes by running against the preprod MyInvois sandbox via a host app; there is no local way to dry-run.
+- When changing document shape or signing, run `composer test` first — the golden-path assertions in `tests/Unit/UblBuildTest.php` and `tests/Unit/SignatureTest.php` guard the load-bearing UBL paths and XAdES digests. End-to-end still needs the preprod sandbox.
 - Document shape changes must stay backwards-compatible with the flat array contract in `Helpers/Sample.php` — that's the documented input format for callers.
 - The signing flow is order-sensitive: `UBL::build` must run before `Signature::build`, and the JSON serialization inside `Signature::toJson` must not be reformatted.
 - `Validator.php` runs Laravel validation against the flat input shape (not the built UBL). Call `app('myinvois')->validator($doc)` before submission to surface user-friendly errors.
