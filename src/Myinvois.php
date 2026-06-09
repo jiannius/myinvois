@@ -10,6 +10,7 @@ use Jiannius\Myinvois\Helpers\Signature;
 use Jiannius\Myinvois\Helpers\UBL;
 use Jiannius\Myinvois\Helpers\Validator;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
+use Jiannius\Myinvois\Testing\MyinvoisFake;
 
 class Myinvois
 {
@@ -21,6 +22,20 @@ class Myinvois
     ];
 
     public $failedCallback;
+
+    /**
+     * Swap the `myinvois` container binding for an in-memory fake (no network,
+     * no signing, no sleeping). Host-app code calling app('myinvois')->... then
+     * hits the fake. Returns it so tests can configure and assert against it.
+     */
+    public static function fake() : MyinvoisFake
+    {
+        $fake = new MyinvoisFake();
+
+        app()->instance('myinvois', $fake);
+
+        return $fake;
+    }
 
     /**
      * Set the client id

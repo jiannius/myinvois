@@ -175,13 +175,56 @@ Code::msic()->value('XXXXX');                 // Malaysia Standard Industrial Cl
 
 Special TINs (general public, foreign buyer, government) live in `Jiannius\Myinvois\Enums\TinType`. Use these when the buyer has no real TIN — but note: without an `is_consolidate => true` flag, the validator rejects standard submissions to `GENERAL_PUBLIC` for Invoice / Credit Note / Debit Note / Refund Note types.
 
+### Testing your integration
+
+The package already tests its own internals (UBL build, signing, validator, codes, models, the submission pipeline). **Don't re-test those.** What *your* app owns — and should test — is the mapping from your domain models into the flat document array, plus your submit/cancel flows.
+
+Two patterns cover almost everything, both offline:
+
+**1. Assert your mapping produces a valid, buildable document** (no network, no keys):
+
+@verbatim
+<code-snippet name="Test your mapping offline" lang="php">
+use Jiannius\Myinvois\Helpers\UBL;
+
+$document = $order->toMyinvoisDocument();        // your mapper
+
+$this->assertTrue(app('myinvois')->validator($document)->passes());
+$this->assertIsArray(UBL::build($document));     // throws if the shape is wrong
+</code-snippet>
+@endverbatim
+
+**2. Test submit / cancel flows with `Myinvois::fake()`** — swaps the `myinvois` binding for an in-memory double that never signs, calls the network, or sleeps. It records calls and persists `MyinvoisDocument` rows exactly like the real pipeline (consolidated-aware), so observers and `myinvois_status` write-back still fire:
+
+@verbatim
+<code-snippet name="Test flows with the fake" lang="php">
+use Jiannius\Myinvois\Myinvois;
+
+$fake = Myinvois::fake();              // no client id/secret/key/cert needed
+
+$order->submitToMyinvois();           // your code: app('myinvois')->submitDocuments([...])
+
+$fake->assertSubmitted();
+$fake->assertDocumentSubmitted($order->invoice_number);
+$this->assertTrue($order->fresh()->isSubmittedToMyinvois());
+
+// configure outcomes and canned read responses:
+Myinvois::fake()->resolveStatus('invalid');                          // persisted status
+Myinvois::fake()->respondToApi('taxpayer/search/*', ['tin' => 'C1']); // read endpoints
+</code-snippet>
+@endverbatim
+
+Available assertions on the fake: `assertSubmitted(?callable)`, `assertNothingSubmitted()`, `assertSubmittedCount(int)`, `assertDocumentSubmitted($number)`, `assertCancelled(?$uid)`, `assertNotCancelled()`, `assertRejected(?$uid)`.
+
+True end-to-end (a real signature accepted by LHDN) still requires the **preprod sandbox** — the fake proves your wiring, not that LHDN accepts the payload.
+
 ### LHDN constraints to respect
 
 - **72-hour cancellation window** — enforced by `isCancellable()`; LHDN rejects late cancellations anyway.
 - **Rate limits** — already handled by `callApi()` via Laravel `RateLimiter`. If you wrap submission in a queue, don't add a second throttle.
 - **Document shape is the contract** — the flat array in `Helpers/Sample.php` is the documented input. Don't hand-roll UBL.
 - **Preprod vs prod isolation** — preprod docs auto-route to `preprod.myinvois.hasil.gov.my`; status columns are kept separate. The package toggles preprod based on environment, but you can force it with `setPreprod(true|false)`.
-- **No automated test suite** — validate end-to-end against the preprod sandbox before touching prod. There is no local dry-run mode.
+- **Test offline with `Myinvois::fake()` and `validator()`** (see "Testing your integration") — but there is no local dry-run of a real LHDN submission. Validate end-to-end against the preprod sandbox before touching prod.
 
 ### LHDN policy beyond this package
 
@@ -202,3 +245,4 @@ The package's repo also keeps a short `docs/lhdn-references.md` with the load-be
 - For consolidated docs: set `is_consolidate => true`, use the `GENERAL_PUBLIC` TIN, and skip line-item classifications.
 - Track status via `$model->myinvois_status` / `latestMyinvoisDocument` rather than re-querying MyInvois.
 - For cancellation, gate the UI on `isCancellable()` so users don't try after the 72-hour window.
+- Test the mapping offline with `validator()` / `UBL::build()`, and the submit/cancel flow with `Myinvois::fake()`, before validating end-to-end on preprod.
