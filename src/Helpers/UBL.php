@@ -753,7 +753,10 @@ class UBL
                 $isMultipleTaxes = collect($taxes)->keys()->every(fn ($key) => is_numeric($key));
 
                 return [
-                    'qty' => data_get($item, 'InvoicedQuantity') ?? data_get($item, 'InvoicedQuantity.value'),
+                    // InvoicedQuantity carries a unitCode attribute, so xmlToArray shapes it
+                    // as ['value' => .., '@attributes' => ..]; read .value first (the bare
+                    // element is only the scalar when there is no attribute).
+                    'qty' => data_get($item, 'InvoicedQuantity.value') ?? data_get($item, 'InvoicedQuantity'),
                     'uom' => data_get($item, 'InvoicedQuantity.@attributes.unitCode'),
                     'description' => data_get($item, 'Item.Description'),
                     'unit_price' => data_get($item, 'Price.PriceAmount.value'),

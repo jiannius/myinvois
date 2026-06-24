@@ -70,6 +70,13 @@ class UblRestoreTest extends TestCase
         $this->assertEquals(50, $flat['line_items'][0]['unit_price']);
         $this->assertEquals('022', $flat['line_items'][0]['classifications'][0]['code']);
 
+        // InvoicedQuantity has a unitCode attribute → qty must restore as the scalar
+        // value, not the ['value'=>.., '@attributes'=>..] array (which crashes on save
+        // with "Array to string conversion"). uom comes from the attribute.
+        $this->assertEquals(2, $flat['line_items'][0]['qty']);
+        $this->assertIsNotArray($flat['line_items'][0]['qty']);
+        $this->assertSame('C62', $flat['line_items'][0]['uom']);
+
         // a PaymentMeansCode in the XML must restore without an undefined-array-key
         // warning and resolve to the normalised payment-mode code
         $this->assertSame('03', $flat['payment_mode']);
