@@ -69,6 +69,10 @@ class UblRestoreTest extends TestCase
         $this->assertSame('XML Item', $flat['line_items'][0]['description']);
         $this->assertEquals(50, $flat['line_items'][0]['unit_price']);
         $this->assertEquals('022', $flat['line_items'][0]['classifications'][0]['code']);
+
+        // a PaymentMeansCode in the XML must restore without an undefined-array-key
+        // warning and resolve to the normalised payment-mode code
+        $this->assertSame('03', $flat['payment_mode']);
     }
 
     protected function xmlFixture() : string
@@ -80,6 +84,9 @@ class UblRestoreTest extends TestCase
             <IssueTime>08:00:00Z</IssueTime>
             <InvoiceTypeCode listVersionID="1.1">01</InvoiceTypeCode>
             <DocumentCurrencyCode>MYR</DocumentCurrencyCode>
+            <PaymentMeans>
+                <PaymentMeansCode>03</PaymentMeansCode>
+            </PaymentMeans>
             <AccountingSupplierParty>
                 <Party>
                     <PartyLegalEntity><RegistrationName>XML Supplier</RegistrationName></PartyLegalEntity>

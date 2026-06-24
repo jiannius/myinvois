@@ -684,7 +684,7 @@ class UBL
 
 
         $data['payment_mode'] = data_get($ubl, 'Invoice.PaymentMeans.PaymentMeansCode');
-        if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes()->value($data['payment_modes']);
+        if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes()->value($data['payment_mode']);
 
         $data['payment_term'] = data_get($ubl, 'Invoice.PaymentTerms.Note');
             
