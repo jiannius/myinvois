@@ -21,6 +21,7 @@ class MyinvoisDocument extends Model
         'response' => 'array',
         'status' => Status::class,
         'is_preprod' => 'boolean',
+        'is_inbound' => 'boolean',
     ];
 
     /**
