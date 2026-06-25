@@ -636,7 +636,7 @@ class UBL
             'city' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.CityName'),
             'state' => Code::states()->value((string) data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.CountrySubentityCode')),
             'country' => Code::countries()->value((string) data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.Country.IdentificationCode.value')),
-            'certex' => data_get($ubl, 'Invoice.AccountingSupplierParty.AdditionalAccountID'),
+            'certex' => data_get($ubl, 'Invoice.AccountingSupplierParty.AdditionalAccountID.value') ?? data_get($ubl, 'Invoice.AccountingSupplierParty.AdditionalAccountID'),
             'msic_code' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.IndustryClassificationCode.value'),
             'msic_description' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.IndustryClassificationCode.@attributes.name'),
         ];
@@ -662,7 +662,7 @@ class UBL
             'city' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.CityName'),
             'state' => Code::states()->value((string) data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.CountrySubentityCode')),
             'country' => Code::countries()->value((string) data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.Country.IdentificationCode.value')),
-            'certex' => data_get($ubl, 'Invoice.AccountingCustomerParty.AdditionalAccountID'),
+            'certex' => data_get($ubl, 'Invoice.AccountingCustomerParty.AdditionalAccountID.value') ?? data_get($ubl, 'Invoice.AccountingCustomerParty.AdditionalAccountID'),
             'msic_code' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.IndustryClassificationCode.value'),
             'msic_description' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.IndustryClassificationCode.@attributes.name'),
         ];   
@@ -689,7 +689,10 @@ class UBL
         $data['payment_term'] = data_get($ubl, 'Invoice.PaymentTerms.Note');
             
         $data['prepaid'] = [
-            'amount' => data_get($ubl, 'Invoice.PrepaidPayment.PaidAmount'),
+            // PaidAmount carries a currencyID attribute, so xmlToArray shapes it as
+            // ['value'=>.., '@attributes'=>..]; read .value first (the bare element is
+            // only the scalar when there is no attribute).
+            'amount' => data_get($ubl, 'Invoice.PrepaidPayment.PaidAmount.value') ?? data_get($ubl, 'Invoice.PrepaidPayment.PaidAmount'),
 
             'paid_at' => collect([
                 data_get($ubl, 'Invoice.PrepaidPayment.PaidDate'),
@@ -702,8 +705,10 @@ class UBL
         $data['charges'] = collect(data_get($ubl, 'Invoice.AllowanceCharge'))
             ->filter(fn ($item) => data_get($item, 'ChargeIndicator'))
             ->values()
+            // Amount carries a currencyID attribute, so xmlToArray shapes it as
+            // ['value'=>.., '@attributes'=>..]; read .value first.
             ->map(fn ($item) => [
-                'amount' => data_get($item, 'Amount'),
+                'amount' => data_get($item, 'Amount.value') ?? data_get($item, 'Amount'),
                 'description' => data_get($item, 'AllowanceChargeReason'),
             ])
             ->toArray();
@@ -712,14 +717,18 @@ class UBL
             ->filter(fn ($item) => !(data_get($item, 'ChargeIndicator')))
             ->values()
             ->map(fn ($item) => [
-                'amount' => data_get($item, 'Amount'),
+                'amount' => data_get($item, 'Amount.value') ?? data_get($item, 'Amount'),
                 'description' => data_get($item, 'AllowanceChargeReason'),
             ])
             ->toArray();
 
-        $data['taxes'] = collect(data_get($ubl, 'Invoice.TaxTotal.TaxSubtotal'))
+        // if only has 1 tax subtotal, the array itself is the subtotal
+        $taxSubtotals = data_get($ubl, 'Invoice.TaxTotal.TaxSubtotal');
+        $isMultipleTaxSubtotals = collect($taxSubtotals)->keys()->every(fn ($key) => is_numeric($key));
+
+        $data['taxes'] = collect($isMultipleTaxSubtotals ? $taxSubtotals : [$taxSubtotals])
             ->map(function ($tax) {
-                $code = data_get($tax, 'TaxCategory.ID');
+                $code = data_get($tax, 'TaxCategory.ID.value') ?? data_get($tax, 'TaxCategory.ID');
                 $name = $code ? Code::taxes()->label($code) : null;
 
                 return [
@@ -760,7 +769,9 @@ class UBL
                     'uom' => data_get($item, 'InvoicedQuantity.@attributes.unitCode'),
                     'description' => data_get($item, 'Item.Description'),
                     'unit_price' => data_get($item, 'Price.PriceAmount.value'),
-                    'country' => data_get($item, 'Item.OriginCountry.IdentificationCode'),
+                    // IdentificationCode may carry a listID attribute in third-party XML,
+                    // shaping it as ['value'=>.., '@attributes'=>..]; read .value first.
+                    'country' => data_get($item, 'Item.OriginCountry.IdentificationCode.value') ?? data_get($item, 'Item.OriginCountry.IdentificationCode'),
 
                     'classifications' => collect($isMultipleClassifications ? $classifications : [$classifications])
                         ->map(fn ($val) => ['code' => data_get($val, 'value')])
@@ -768,7 +779,7 @@ class UBL
 
                     'taxes' => collect($isMultipleTaxes ? $taxes : [$taxes])
                         ->map(function ($tax) {
-                            $code = data_get($tax, 'TaxCategory.ID');
+                            $code = data_get($tax, 'TaxCategory.ID.value') ?? data_get($tax, 'TaxCategory.ID');
                             $name = $code ? Code::taxes()->label($code) : null;
 
                             return [
