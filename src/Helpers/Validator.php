@@ -174,6 +174,25 @@ class Validator
                     },
                 ];
             }
+            // A foreign buyer still needs an address — LHDN mandates city/country and
+            // otherwise rejects with a cryptic server-side error. State is omitted: a
+            // foreign address legitimately has none and the UBL builder defaults it to NA.
+            else if ($tintype === TinType::FOREIGN_BUYER) {
+                return [
+                    'buyer.name' => 'required',
+                    'buyer.tin' => 'required',
+                    'buyer.address_line_1' => 'required',
+                    'buyer.city' => 'required',
+                    'buyer.country' => [
+                        'required',
+                        function ($attribute, $value, $fail) {
+                            if (!is_string(Code::countries()->value($value))) {
+                                $fail('Invalid buyer country');
+                            }
+                        },
+                    ],
+                ];
+            }
             else {
                 return [
                     'buyer.name' => 'required',

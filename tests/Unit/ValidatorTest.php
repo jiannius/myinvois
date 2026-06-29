@@ -95,6 +95,31 @@ class ValidatorTest extends TestCase
     }
 
     #[Test]
+    public function a_foreign_buyer_without_a_city_is_rejected() : void
+    {
+        $doc = DocumentFixture::invoice();
+        $doc['buyer']['tin'] = 'EI00000000020'; // foreign buyer
+        unset($doc['buyer']['city']);
+
+        $v = $this->validate($doc);
+
+        $this->assertTrue($v->fails());
+        $this->assertSame('Buyer city is required', $v->errors()->first('buyer.city'));
+    }
+
+    #[Test]
+    public function a_foreign_buyer_with_a_full_address_passes() : void
+    {
+        $doc = DocumentFixture::invoice();
+        $doc['buyer']['tin'] = 'EI00000000020';
+
+        $v = $this->validate($doc);
+
+        $this->assertFalse($v->errors()->has('buyer.city'));
+        $this->assertTrue($v->passes(), $v->errors()->first());
+    }
+
+    #[Test]
     public function a_consolidated_document_with_004_on_every_line_passes() : void
     {
         // classifications are mandatory on every line; for consolidated it is 004
