@@ -112,12 +112,16 @@ class Myinvois
             is_bool(config('services.myinvois.preprod')) ? config('services.myinvois.preprod') : !app()->environment('production')
         );
 
+        // Preprod and prod are separate LHDN environments with separate credentials.
+        // Never fall back from one to the other — a missing preprod credential must
+        // fail loud (see getToken) instead of silently authenticating with prod creds
+        // against the preprod endpoint, which LHDN rejects as a misleading "invalid_client".
         $clientId = data_get($this->settings, 'client_id') ?? (
-            $preprod ? (config('services.myinvois.preprod_client_id') ?? config('services.myinvois.client_id')) : config('services.myinvois.client_id')
+            $preprod ? config('services.myinvois.preprod_client_id') : config('services.myinvois.client_id')
         );
 
         $clientSecret = data_get($this->settings, 'client_secret') ?? (
-            $preprod ? (config('services.myinvois.preprod_client_secret') ?? config('services.myinvois.client_secret')) : config('services.myinvois.client_secret')
+            $preprod ? config('services.myinvois.preprod_client_secret') : config('services.myinvois.client_secret')
         );
 
         $settings = [
@@ -158,7 +162,9 @@ class Myinvois
         $clientSecret = $this->getSettings('client_secret');
         $onBehalfOf = $this->getSettings('on_behalf_of');
 
-        throw_if(!$clientId || !$clientSecret, \Exception::class, 'Missing Client ID / Client Secret');
+        throw_if(!$clientId || !$clientSecret, \Exception::class, $this->getSettings('preprod')
+            ? 'Missing MyInvois sandbox (preprod) Client ID / Client Secret'
+            : 'Missing MyInvois Client ID / Client Secret');
 
         $cachekey = collect(['myinvois', $clientId, $onBehalfOf])->filter()->join('_');
         $cache = cache($cachekey);
@@ -183,7 +189,7 @@ class Myinvois
 
         $response = $http->post(url: $url, data: $data);
 
-        if ($response->clientError()) abort($response->status(), 'MyInvois Portal Unauthorized');
+        if ($response->clientError()) abort($response->status(), $this->getTokenErrorMessage($response));
 
         $response->throw();
 
@@ -193,6 +199,21 @@ class Myinvois
         ]);
 
         return $this->getToken();
+    }
+
+    /**
+     * Build a human-friendly message for a failed /connect/token request.
+     * LHDN returns either an OAuth-style {"error":"<code>"} body (e.g. invalid_client)
+     * or a gateway-style {"statusCode":..,"message":".."} body on a 4xx.
+     */
+    protected function getTokenErrorMessage($response) : string
+    {
+        $code = data_get($response->json(), 'error') ?? data_get($response->json(), 'message');
+
+        return match ($code) {
+            'invalid_client' => 'MyInvois rejected the API credentials. Check that the MyInvois Client ID and Client Secret are correct and match the selected environment (production vs sandbox).',
+            default => 'MyInvois authentication failed'.($code ? " ($code)" : " (HTTP {$response->status()})").'. Please try again or contact support.',
+        };
     }
 
     /**

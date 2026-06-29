@@ -103,12 +103,36 @@ class MyinvoisApiTest extends TestCase
     }
 
     #[Test]
-    public function it_throws_without_client_credentials() : void
+    public function it_throws_a_preprod_specific_message_without_sandbox_credentials() : void
     {
+        // the testing environment defaults to preprod
         $this->expectException(\Exception::class);
-        $this->expectExceptionMessage('Missing Client ID / Client Secret');
+        $this->expectExceptionMessage('Missing MyInvois sandbox (preprod) Client ID / Client Secret');
 
         (new Myinvois)->getToken();
+    }
+
+    #[Test]
+    public function it_throws_a_prod_specific_message_without_prod_credentials() : void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Missing MyInvois Client ID / Client Secret');
+
+        (new Myinvois)->setPreprod(false)->getToken();
+    }
+
+    #[Test]
+    public function preprod_does_not_fall_back_to_prod_credentials() : void
+    {
+        config()->set('services.myinvois.client_id', 'prod-id');
+        config()->set('services.myinvois.client_secret', 'prod-secret');
+        config()->set('services.myinvois.preprod_client_id', null);
+        config()->set('services.myinvois.preprod_client_secret', null);
+
+        $m = (new Myinvois)->setPreprod(true);
+
+        $this->assertNull($m->getSettings('client_id'));
+        $this->assertNull($m->getSettings('client_secret'));
     }
 
     #[Test]
@@ -123,13 +147,30 @@ class MyinvoisApiTest extends TestCase
     }
 
     #[Test]
-    public function a_token_client_error_aborts() : void
+    public function an_invalid_client_token_error_aborts_with_a_friendly_message() : void
     {
-        Http::fake(['*/connect/token' => Http::response('nope', 401)]);
+        Http::fake(['*/connect/token' => Http::response(['error' => 'invalid_client'], 400)]);
 
-        $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
+        try {
+            $this->myinvois()->getToken();
+            $this->fail('Expected an HttpException.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            $this->assertSame(400, $e->getStatusCode());
+            $this->assertStringContainsString('MyInvois rejected the API credentials', $e->getMessage());
+        }
+    }
 
-        $this->myinvois()->getToken();
+    #[Test]
+    public function an_unknown_token_error_surfaces_the_lhdn_code() : void
+    {
+        Http::fake(['*/connect/token' => Http::response(['error' => 'invalid_request'], 400)]);
+
+        try {
+            $this->myinvois()->getToken();
+            $this->fail('Expected an HttpException.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            $this->assertStringContainsString('MyInvois authentication failed (invalid_request)', $e->getMessage());
+        }
     }
 
     // ---- read endpoints ------------------------------------------------

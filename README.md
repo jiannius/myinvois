@@ -137,7 +137,7 @@ app('myinvois')->setFailedCallback(function ($response) {
 });
 ```
 
-A 403 always throws (`Permissions denied from MyInvois Portal`). A 401 aborts the request with `MyInvois Portal Unauthorized` during token acquisition.
+A 403 always throws (`Permissions denied from MyInvois Portal`). A 4xx during token acquisition aborts with a human-friendly message derived from LHDN's OAuth error — e.g. `invalid_client` becomes *"MyInvois rejected the API credentials…"* (see `getTokenErrorMessage`). Preprod and prod credentials never fall back to one another: requesting preprod without sandbox credentials throws `Missing MyInvois sandbox (preprod) Client ID / Client Secret` rather than silently using prod creds against the preprod endpoint.
 
 ## Document shape
 
