@@ -148,6 +148,32 @@ class UblRestoreTest extends TestCase
         $this->assertIsNotArray($flat['taxes'][0]['exemption_reason']);
         $this->assertSame('Line exempt reason', $flat['line_items'][0]['taxes'][0]['exemption_reason']);
         $this->assertIsNotArray($flat['line_items'][0]['taxes'][0]['exemption_reason']);
+
+        // DocumentCurrencyCode (listID) → saved to a string column, so the array would be fatal.
+        $this->assertSame('MYR', $flat['currency']);
+        $this->assertIsNotArray($flat['currency']);
+
+        // InvoiceDocumentReference ID (schemeID) → original_number, a string column.
+        $this->assertSame('ORIG-INV-1', $flat['original_number']);
+        $this->assertIsNotArray($flat['original_number']);
+
+        // InvoicePeriod Description (languageID) → billing.frequency.
+        $this->assertSame('Monthly', $flat['billing']['frequency']);
+        $this->assertIsNotArray($flat['billing']['frequency']);
+
+        // PaymentMeansCode (listID) → normalised payment-mode code.
+        $this->assertSame('03', $flat['payment_mode']);
+        $this->assertIsNotArray($flat['payment_mode']);
+
+        // AllowanceChargeReason (languageID) → charge description and line-discount description.
+        $this->assertSame('Shipping', $flat['charges'][0]['description']);
+        $this->assertIsNotArray($flat['charges'][0]['description']);
+        $this->assertSame('Line discount', $flat['line_items'][0]['discount']['description']);
+        $this->assertIsNotArray($flat['line_items'][0]['discount']['description']);
+
+        // Item Description (languageID) → saved to a string column, so the array would be fatal.
+        $this->assertSame('XML Item', $flat['line_items'][0]['description']);
+        $this->assertIsNotArray($flat['line_items'][0]['description']);
     }
 
     protected function xmlFixture() : string
@@ -259,14 +285,23 @@ class UblRestoreTest extends TestCase
 
     protected function xmlFixtureThirdParty() : string
     {
+        // Every text/code/id element below carries an XML attribute (languageID/listID/schemeID),
+        // the way a third-party UBL generator may emit them — xmlToArray then shapes each as
+        // ['value'=>.., '@attributes'=>..]. restoreXml must read .value, not the array.
         return <<<'XML'
         <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
             <ID>INV-XML-3</ID>
             <IssueDate>2026-03-01</IssueDate>
             <IssueTime>08:00:00Z</IssueTime>
             <InvoiceTypeCode listVersionID="1.1">01</InvoiceTypeCode>
-            <DocumentCurrencyCode>MYR</DocumentCurrencyCode>
+            <DocumentCurrencyCode listID="ISO 4217">MYR</DocumentCurrencyCode>
+            <InvoicePeriod>
+                <Description languageID="en">Monthly</Description>
+            </InvoicePeriod>
             <BillingReference>
+                <InvoiceDocumentReference>
+                    <ID schemeID="ORIG">ORIG-INV-1</ID>
+                </InvoiceDocumentReference>
                 <AdditionalDocumentReference>
                     <ID schemeID="CUS">BILL-REF-1</ID>
                 </AdditionalDocumentReference>
@@ -276,9 +311,17 @@ class UblRestoreTest extends TestCase
                 <DocumentType>CustomsImportForm</DocumentType>
                 <DocumentDescription>Customs import form</DocumentDescription>
             </AdditionalDocumentReference>
+            <PaymentMeans>
+                <PaymentMeansCode listID="UN/ECE 4461">03</PaymentMeansCode>
+            </PaymentMeans>
             <PaymentTerms>
                 <Note languageID="en">Payment due in 30 days</Note>
             </PaymentTerms>
+            <AllowanceCharge>
+                <ChargeIndicator>true</ChargeIndicator>
+                <AllowanceChargeReason languageID="en">Shipping</AllowanceChargeReason>
+                <Amount currencyID="MYR">10</Amount>
+            </AllowanceCharge>
             <TaxTotal>
                 <TaxSubtotal>
                     <TaxableAmount currencyID="MYR">100</TaxableAmount>
@@ -308,9 +351,13 @@ class UblRestoreTest extends TestCase
                 <ID>1</ID>
                 <InvoicedQuantity unitCode="C62">1</InvoicedQuantity>
                 <Item>
-                    <Description>XML Item</Description>
+                    <Description languageID="en">XML Item</Description>
                 </Item>
                 <Price><PriceAmount currencyID="MYR">100</PriceAmount></Price>
+                <AllowanceCharge>
+                    <AllowanceChargeReason languageID="en">Line discount</AllowanceChargeReason>
+                    <Amount currencyID="MYR">2</Amount>
+                </AllowanceCharge>
                 <TaxTotal>
                     <TaxSubtotal>
                         <TaxableAmount currencyID="MYR">100</TaxableAmount>

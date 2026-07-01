@@ -601,7 +601,8 @@ class UBL
     public static function restoreXml($ubl)
     {
         $data['number'] = data_get($ubl, 'Invoice.ID');
-        $data['original_number'] = data_get($ubl, 'Invoice.BillingReference.InvoiceDocumentReference.ID');
+        // ID may carry a schemeID attribute in third-party XML → read .value first.
+        $data['original_number'] = data_get($ubl, 'Invoice.BillingReference.InvoiceDocumentReference.ID.value') ?? data_get($ubl, 'Invoice.BillingReference.InvoiceDocumentReference.ID');
         $data['original_document_uuid'] = data_get($ubl, 'Invoice.BillingReference.InvoiceDocumentReference.UUID');
 
         $data['issued_at'] = new \Carbon\CarbonImmutable(collect([
@@ -611,7 +612,9 @@ class UBL
 
         $data['document_type'] = Code::documentTypes()->label(data_get($ubl, 'Invoice.InvoiceTypeCode.value'));
         $data['document_version'] = data_get($ubl, 'Invoice.InvoiceTypeCode.@attributes.listVersionID');
-        $data['currency'] = data_get($ubl, 'Invoice.DocumentCurrencyCode');
+        // DocumentCurrencyCode may carry a listID attribute in third-party XML → read .value
+        // first (saved to a string column, so an array throws "Array to string conversion").
+        $data['currency'] = data_get($ubl, 'Invoice.DocumentCurrencyCode.value') ?? data_get($ubl, 'Invoice.DocumentCurrencyCode');
         $data['currency_rate'] = data_get($ubl, 'Invoice.TaxExchangeRate.CalculationRate');
 
         $data['supplier'] = [
@@ -674,7 +677,8 @@ class UBL
         $data['billing'] = [
             'start_at' => data_get($ubl, 'Invoice.InvoicePeriod.StartDate'),
             'end_at' => data_get($ubl, 'Invoice.InvoicePeriod.EndDate'),
-            'frequency' => data_get($ubl, 'Invoice.InvoicePeriod.Description'),
+            // Description may carry a languageID attribute in third-party XML → read .value first.
+            'frequency' => data_get($ubl, 'Invoice.InvoicePeriod.Description.value') ?? data_get($ubl, 'Invoice.InvoicePeriod.Description'),
             // ID may carry an attribute in third-party XML → read .value first.
             'reference' => data_get($ubl, 'Invoice.BillingReference.AdditionalDocumentReference.ID.value') ?? data_get($ubl, 'Invoice.BillingReference.AdditionalDocumentReference.ID'),
         ];
@@ -695,7 +699,8 @@ class UBL
             ->toArray();
 
 
-        $data['payment_mode'] = data_get($ubl, 'Invoice.PaymentMeans.PaymentMeansCode');
+        // PaymentMeansCode may carry a listID attribute in third-party XML → read .value first.
+        $data['payment_mode'] = data_get($ubl, 'Invoice.PaymentMeans.PaymentMeansCode.value') ?? data_get($ubl, 'Invoice.PaymentMeans.PaymentMeansCode');
         if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes()->value($data['payment_mode']);
 
         // Note may carry a languageID attribute in third-party XML → read .value first.
@@ -715,23 +720,30 @@ class UBL
             'reference' => data_get($ubl, 'Invoice.PrepaidPayment.ID'),
         ];
 
-        $data['charges'] = collect(data_get($ubl, 'Invoice.AllowanceCharge'))
+        // A single AllowanceCharge is shaped by xmlToArray as an assoc array (not a numeric
+        // list); guard single-vs-multiple like taxes/line-items so one charge/discount isn't
+        // silently dropped by the filters below.
+        $allowanceCharges = data_get($ubl, 'Invoice.AllowanceCharge');
+        $isMultipleAllowanceCharges = collect($allowanceCharges)->keys()->every(fn ($key) => is_numeric($key));
+        $allowanceCharges = blank($allowanceCharges) ? [] : ($isMultipleAllowanceCharges ? $allowanceCharges : [$allowanceCharges]);
+
+        $data['charges'] = collect($allowanceCharges)
             ->filter(fn ($item) => data_get($item, 'ChargeIndicator'))
             ->values()
             // Amount carries a currencyID attribute, so xmlToArray shapes it as
             // ['value'=>.., '@attributes'=>..]; read .value first.
             ->map(fn ($item) => [
                 'amount' => data_get($item, 'Amount.value') ?? data_get($item, 'Amount'),
-                'description' => data_get($item, 'AllowanceChargeReason'),
+                'description' => data_get($item, 'AllowanceChargeReason.value') ?? data_get($item, 'AllowanceChargeReason'),
             ])
             ->toArray();
 
-        $data['discounts'] = collect(data_get($ubl, 'Invoice.AllowanceCharge'))
+        $data['discounts'] = collect($allowanceCharges)
             ->filter(fn ($item) => !(data_get($item, 'ChargeIndicator')))
             ->values()
             ->map(fn ($item) => [
                 'amount' => data_get($item, 'Amount.value') ?? data_get($item, 'Amount'),
-                'description' => data_get($item, 'AllowanceChargeReason'),
+                'description' => data_get($item, 'AllowanceChargeReason.value') ?? data_get($item, 'AllowanceChargeReason'),
             ])
             ->toArray();
 
@@ -780,7 +792,9 @@ class UBL
                     // element is only the scalar when there is no attribute).
                     'qty' => data_get($item, 'InvoicedQuantity.value') ?? data_get($item, 'InvoicedQuantity'),
                     'uom' => data_get($item, 'InvoicedQuantity.@attributes.unitCode'),
-                    'description' => data_get($item, 'Item.Description'),
+                    // Description may carry a languageID attribute in third-party XML → read .value
+                    // first (saved to a string column, so an array throws "Array to string conversion").
+                    'description' => data_get($item, 'Item.Description.value') ?? data_get($item, 'Item.Description'),
                     'unit_price' => data_get($item, 'Price.PriceAmount.value'),
                     // IdentificationCode may carry a listID attribute in third-party XML,
                     // shaping it as ['value'=>.., '@attributes'=>..]; read .value first.
@@ -813,7 +827,7 @@ class UBL
 
                     'discount' => [
                         'amount' => data_get($item, 'AllowanceCharge.Amount.value'),
-                        'description' => data_get($item, 'AllowanceCharge.AllowanceChargeReason'),
+                        'description' => data_get($item, 'AllowanceCharge.AllowanceChargeReason.value') ?? data_get($item, 'AllowanceCharge.AllowanceChargeReason'),
                         'rate' => data_get($item, 'AllowanceCharge.MultiplierFactorNumeric'),
                     ],
                 ];
