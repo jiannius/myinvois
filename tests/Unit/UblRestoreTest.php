@@ -118,6 +118,38 @@ class UblRestoreTest extends TestCase
         $this->assertIsNotArray($flat['taxes'][0]['code']);
     }
 
+    #[Test]
+    public function it_restores_attributed_text_and_single_references_as_scalars() : void
+    {
+        $flat = UBL::restore($this->xmlFixtureThirdParty());
+
+        // BillingReference ID carries a schemeID attribute → read .value, not the array.
+        $this->assertSame('BILL-REF-1', $flat['billing']['reference']);
+        $this->assertIsNotArray($flat['billing']['reference']);
+
+        // A single AdditionalDocumentReference is shaped by xmlToArray as an assoc array (not a
+        // numeric list); it must restore as ONE reference, not one bogus entry per child key.
+        $this->assertCount(1, $flat['references']);
+        $this->assertSame('CUSTOMS-1', $flat['references'][0]['reference']);
+        $this->assertSame('CustomsImportForm', $flat['references'][0]['type']);
+        $this->assertSame('Customs import form', $flat['references'][0]['description']);
+
+        // PaymentTerms Note carries a languageID attribute → read .value.
+        $this->assertSame('Payment due in 30 days', $flat['payment_term']);
+        $this->assertIsNotArray($flat['payment_term']);
+
+        // CountrySubentityCode carries an attribute → the (string) cast must not crash on the
+        // ['value'=>.., '@attributes'=>..] array ("Array to string conversion").
+        $this->assertSame('01', $flat['supplier']['state']);
+        $this->assertIsNotArray($flat['supplier']['state']);
+
+        // TaxExemptionReason carries a languageID attribute, invoice-level and line-level.
+        $this->assertSame('Exempt under Schedule A', $flat['taxes'][0]['exemption_reason']);
+        $this->assertIsNotArray($flat['taxes'][0]['exemption_reason']);
+        $this->assertSame('Line exempt reason', $flat['line_items'][0]['taxes'][0]['exemption_reason']);
+        $this->assertIsNotArray($flat['line_items'][0]['taxes'][0]['exemption_reason']);
+    }
+
     protected function xmlFixture() : string
     {
         return <<<'XML'
@@ -220,6 +252,75 @@ class UblRestoreTest extends TestCase
                     <OriginCountry><IdentificationCode listID="ISO3166-1">MYS</IdentificationCode></OriginCountry>
                 </Item>
                 <Price><PriceAmount currencyID="MYR">50</PriceAmount></Price>
+            </InvoiceLine>
+        </Invoice>
+        XML;
+    }
+
+    protected function xmlFixtureThirdParty() : string
+    {
+        return <<<'XML'
+        <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
+            <ID>INV-XML-3</ID>
+            <IssueDate>2026-03-01</IssueDate>
+            <IssueTime>08:00:00Z</IssueTime>
+            <InvoiceTypeCode listVersionID="1.1">01</InvoiceTypeCode>
+            <DocumentCurrencyCode>MYR</DocumentCurrencyCode>
+            <BillingReference>
+                <AdditionalDocumentReference>
+                    <ID schemeID="CUS">BILL-REF-1</ID>
+                </AdditionalDocumentReference>
+            </BillingReference>
+            <AdditionalDocumentReference>
+                <ID schemeID="CustomsImportForm">CUSTOMS-1</ID>
+                <DocumentType>CustomsImportForm</DocumentType>
+                <DocumentDescription>Customs import form</DocumentDescription>
+            </AdditionalDocumentReference>
+            <PaymentTerms>
+                <Note languageID="en">Payment due in 30 days</Note>
+            </PaymentTerms>
+            <TaxTotal>
+                <TaxSubtotal>
+                    <TaxableAmount currencyID="MYR">100</TaxableAmount>
+                    <TaxAmount currencyID="MYR">0</TaxAmount>
+                    <TaxCategory>
+                        <ID schemeID="UN/ECE 5305">E</ID>
+                        <TaxExemptionReason languageID="en">Exempt under Schedule A</TaxExemptionReason>
+                    </TaxCategory>
+                </TaxSubtotal>
+            </TaxTotal>
+            <AccountingSupplierParty>
+                <Party>
+                    <PartyLegalEntity><RegistrationName>XML Supplier</RegistrationName></PartyLegalEntity>
+                    <PartyIdentification><ID schemeID="TIN">C111</ID></PartyIdentification>
+                    <PostalAddress>
+                        <CountrySubentityCode listName="State">01</CountrySubentityCode>
+                    </PostalAddress>
+                </Party>
+            </AccountingSupplierParty>
+            <AccountingCustomerParty>
+                <Party>
+                    <PartyLegalEntity><RegistrationName>XML Buyer</RegistrationName></PartyLegalEntity>
+                    <PartyIdentification><ID schemeID="TIN">C222</ID></PartyIdentification>
+                </Party>
+            </AccountingCustomerParty>
+            <InvoiceLine>
+                <ID>1</ID>
+                <InvoicedQuantity unitCode="C62">1</InvoicedQuantity>
+                <Item>
+                    <Description>XML Item</Description>
+                </Item>
+                <Price><PriceAmount currencyID="MYR">100</PriceAmount></Price>
+                <TaxTotal>
+                    <TaxSubtotal>
+                        <TaxableAmount currencyID="MYR">100</TaxableAmount>
+                        <TaxAmount currencyID="MYR">0</TaxAmount>
+                        <TaxCategory>
+                            <ID schemeID="UN/ECE 5305">E</ID>
+                            <TaxExemptionReason languageID="en">Line exempt reason</TaxExemptionReason>
+                        </TaxCategory>
+                    </TaxSubtotal>
+                </TaxTotal>
             </InvoiceLine>
         </Invoice>
         XML;

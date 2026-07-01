@@ -634,7 +634,10 @@ class UBL
             'address_line_3' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.AddressLine.2.Line'),
             'postcode' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.PostalZone'),
             'city' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.CityName'),
-            'state' => Code::states()->value((string) data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.CountrySubentityCode')),
+            // CountrySubentityCode may carry an attribute in third-party XML, shaping it as
+            // ['value'=>.., '@attributes'=>..]; read .value first. Casting the array to string
+            // (below) would otherwise throw "Array to string conversion".
+            'state' => Code::states()->value((string) (data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.CountrySubentityCode.value') ?? data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.CountrySubentityCode'))),
             'country' => Code::countries()->value((string) data_get($ubl, 'Invoice.AccountingSupplierParty.Party.PostalAddress.Country.IdentificationCode.value')),
             'certex' => data_get($ubl, 'Invoice.AccountingSupplierParty.AdditionalAccountID.value') ?? data_get($ubl, 'Invoice.AccountingSupplierParty.AdditionalAccountID'),
             'msic_code' => data_get($ubl, 'Invoice.AccountingSupplierParty.Party.IndustryClassificationCode.value'),
@@ -660,7 +663,8 @@ class UBL
             'address_line_3' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.AddressLine.2.Line'),
             'postcode' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.PostalZone'),
             'city' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.CityName'),
-            'state' => Code::states()->value((string) data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.CountrySubentityCode')),
+            // CountrySubentityCode may carry an attribute in third-party XML — read .value first.
+            'state' => Code::states()->value((string) (data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.CountrySubentityCode.value') ?? data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.CountrySubentityCode'))),
             'country' => Code::countries()->value((string) data_get($ubl, 'Invoice.AccountingCustomerParty.Party.PostalAddress.Country.IdentificationCode.value')),
             'certex' => data_get($ubl, 'Invoice.AccountingCustomerParty.AdditionalAccountID.value') ?? data_get($ubl, 'Invoice.AccountingCustomerParty.AdditionalAccountID'),
             'msic_code' => data_get($ubl, 'Invoice.AccountingCustomerParty.Party.IndustryClassificationCode.value'),
@@ -671,14 +675,22 @@ class UBL
             'start_at' => data_get($ubl, 'Invoice.InvoicePeriod.StartDate'),
             'end_at' => data_get($ubl, 'Invoice.InvoicePeriod.EndDate'),
             'frequency' => data_get($ubl, 'Invoice.InvoicePeriod.Description'),
-            'reference' => data_get($ubl, 'Invoice.BillingReference.AdditionalDocumentReference.ID'),
+            // ID may carry an attribute in third-party XML → read .value first.
+            'reference' => data_get($ubl, 'Invoice.BillingReference.AdditionalDocumentReference.ID.value') ?? data_get($ubl, 'Invoice.BillingReference.AdditionalDocumentReference.ID'),
         ];
-        
-        $data['references'] = collect(data_get($ubl, 'Invoice.AdditionalDocumentReference'))
+
+        // A single AdditionalDocumentReference is shaped by xmlToArray as an assoc array (not a
+        // numeric list); iterating it directly would map its child KEYS as bogus references.
+        // Guard single-vs-multiple like taxes/line-items, and read .value first for attr-bearing
+        // ID/DocumentType/DocumentDescription in third-party XML.
+        $references = data_get($ubl, 'Invoice.AdditionalDocumentReference');
+        $isMultipleReferences = collect($references)->keys()->every(fn ($key) => is_numeric($key));
+
+        $data['references'] = collect(blank($references) ? [] : ($isMultipleReferences ? $references : [$references]))
             ->map(fn ($item) => [
-                'reference' => data_get($item, 'ID'),
-                'type' => data_get($item, 'DocumentType'),
-                'description' => data_get($item, 'DocumentDescription'),
+                'reference' => data_get($item, 'ID.value') ?? data_get($item, 'ID'),
+                'type' => data_get($item, 'DocumentType.value') ?? data_get($item, 'DocumentType'),
+                'description' => data_get($item, 'DocumentDescription.value') ?? data_get($item, 'DocumentDescription'),
             ])
             ->toArray();
 
@@ -686,7 +698,8 @@ class UBL
         $data['payment_mode'] = data_get($ubl, 'Invoice.PaymentMeans.PaymentMeansCode');
         if ($data['payment_mode']) $data['payment_mode'] = Code::paymentModes()->value($data['payment_mode']);
 
-        $data['payment_term'] = data_get($ubl, 'Invoice.PaymentTerms.Note');
+        // Note may carry a languageID attribute in third-party XML → read .value first.
+        $data['payment_term'] = data_get($ubl, 'Invoice.PaymentTerms.Note.value') ?? data_get($ubl, 'Invoice.PaymentTerms.Note');
             
         $data['prepaid'] = [
             // PaidAmount carries a currencyID attribute, so xmlToArray shapes it as
@@ -740,7 +753,7 @@ class UBL
                     'fixed_rate_base_unit_measure' => data_get($tax, 'BaseUnitMeasure.value'),
                     'fixed_rate_base_unit_measure_code' => data_get($tax, 'BaseUnitMeasure.@attributes.unitCode'),
                     'fixed_rate_per_unit_amount' => data_get($tax, 'PerUnitAmount.value'),
-                    'exemption_reason' => data_get($tax, 'TaxCategory.TaxExemptionReason'),
+                    'exemption_reason' => data_get($tax, 'TaxCategory.TaxExemptionReason.value') ?? data_get($tax, 'TaxCategory.TaxExemptionReason'),
                 ];
             })
             ->toArray();
@@ -791,7 +804,7 @@ class UBL
                                 'fixed_rate_base_unit_measure' => data_get($tax, 'BaseUnitMeasure.value'),
                                 'fixed_rate_base_unit_measure_code' => data_get($tax, 'BaseUnitMeasure.@attributes.unitCode'),
                                 'fixed_rate_per_unit_amount' => data_get($tax, 'PerUnitAmount.value'),
-                                'exemption_reason' => data_get($tax, 'TaxCategory.TaxExemptionReason'),
+                                'exemption_reason' => data_get($tax, 'TaxCategory.TaxExemptionReason.value') ?? data_get($tax, 'TaxCategory.TaxExemptionReason'),
                             ];
                         })
                         ->toArray(),
