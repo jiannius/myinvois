@@ -40,11 +40,22 @@ class MyinvoisDocumentObserver
     }
 
     /**
-     * Fill the parent status
+     * Fill the parent status.
+     *
+     * Uses a key-targeted query update rather than save()/saveQuietly() so it
+     * does NOT bump the parent's updated_at (and fires no model events):
+     * submitting, syncing or cancelling an e-invoice is not a content edit of
+     * the parent document and must not move its last-modified timestamp.
+     * newQueryWithoutScopes keeps the update working regardless of the branch/
+     * tenant scope context it runs in (web, queue, cron).
      */
     public function fillParentStatus($document, $parent, $status)
     {
-        if ($document->is_preprod) $parent->fill(['myinvois_preprod_status' => $status])->saveQuietly();
-        else $parent->fill(['myinvois_status' => $status])->saveQuietly();
+        $column = $document->is_preprod ? 'myinvois_preprod_status' : 'myinvois_status';
+
+        $parent->newQueryWithoutScopes()->whereKey($parent->getKey())->update([$column => $status]);
+
+        // Keep the in-memory instance consistent without marking it dirty.
+        $parent->setAttribute($column, $status)->syncOriginalAttribute($column);
     }
 }
