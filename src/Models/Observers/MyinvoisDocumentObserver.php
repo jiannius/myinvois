@@ -2,6 +2,8 @@
 
 namespace Jiannius\Myinvois\Models\Observers;
 
+use Jiannius\Myinvois\Models\MyinvoisDocument;
+
 class MyinvoisDocumentObserver
 {
     /**
@@ -14,6 +16,10 @@ class MyinvoisDocumentObserver
         $status = $document->status?->value;
 
         if (!$parent) return;
+
+        // A superseded submission (e.g. an old INVALID one re-saved by a status
+        // sync) must not overwrite the status of the newer submission.
+        if (!$this->isLatestSubmission($document)) return;
 
         $this->fillParentStatus(
             document: $document,
@@ -37,6 +43,30 @@ class MyinvoisDocumentObserver
             parent: $parent,
             status: null,
         );
+    }
+
+    /**
+     * Check if the document is the parent's latest submission for its
+     * environment. Mirrors HasMyinvoisDocument::latestMyinvoisDocument() /
+     * preprodLatestMyinvoisDocument(): latestOfMany() on the ULID primary key
+     * (highest id wins), prod being is_preprod false OR null, preprod being
+     * is_preprod true. Honours MyinvoisDocument::$useModel.
+     */
+    protected function isLatestSubmission($document) : bool
+    {
+        $model = MyinvoisDocument::$useModel;
+
+        $latest = (new $model)->newQueryWithoutScopes()
+            ->where('parent_type', $document->parent_type)
+            ->where('parent_id', $document->parent_id)
+            ->when(
+                $document->is_preprod,
+                fn ($q) => $q->where('is_preprod', true),
+                fn ($q) => $q->where(fn ($q) => $q->where('is_preprod', false)->orWhereNull('is_preprod')),
+            )
+            ->max('id');
+
+        return (string) $latest === (string) $document->getKey();
     }
 
     /**
