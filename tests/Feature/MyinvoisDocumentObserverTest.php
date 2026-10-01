@@ -53,4 +53,93 @@ class MyinvoisDocumentObserverTest extends TestCase
 
         $this->assertNull($order->fresh()->myinvois_status);
     }
+
+    #[Test]
+    public function re_saving_an_old_submission_does_not_overwrite_the_latest_status() : void
+    {
+        $order = Order::create();
+
+        $old = $this->child($order, ['status' => 'invalid', 'is_preprod' => false]);
+        $this->child($order, ['status' => 'valid', 'is_preprod' => false]);
+
+        $this->assertSame(Status::VALID, $order->fresh()->myinvois_status);
+
+        // e.g. an hourly status sync touching a superseded submission
+        $old->update(['status' => 'invalid', 'document_number' => 'INV-OLD']);
+
+        $this->assertSame(Status::VALID, $order->fresh()->myinvois_status);
+    }
+
+    #[Test]
+    public function saving_the_latest_submission_still_updates_the_parent() : void
+    {
+        $order = Order::create();
+
+        $this->child($order, ['status' => 'invalid', 'is_preprod' => false]);
+        $latest = $this->child($order, ['status' => 'submitted', 'is_preprod' => false]);
+
+        $this->assertSame(Status::SUBMITTED, $order->fresh()->myinvois_status);
+
+        $latest->update(['status' => 'valid']);
+
+        $this->assertSame(Status::VALID, $order->fresh()->myinvois_status);
+    }
+
+    #[Test]
+    public function a_newer_preprod_submission_does_not_affect_the_prod_status() : void
+    {
+        $order = Order::create();
+
+        $this->child($order, ['status' => 'valid', 'is_preprod' => false]);
+        $this->child($order, ['status' => 'invalid', 'is_preprod' => true]);
+
+        $order = $order->fresh();
+
+        $this->assertSame(Status::VALID, $order->myinvois_status);
+        $this->assertSame(Status::INVALID, $order->myinvois_preprod_status);
+    }
+
+    #[Test]
+    public function latest_is_resolved_per_environment() : void
+    {
+        $order = Order::create();
+
+        // The prod row is older than the preprod row, but it is still the
+        // latest PROD submission, so saving it must update the prod status.
+        $prod = $this->child($order, ['status' => 'submitted', 'is_preprod' => false]);
+        $this->child($order, ['status' => 'valid', 'is_preprod' => true]);
+
+        $prod->update(['status' => 'valid']);
+
+        $order = $order->fresh();
+
+        $this->assertSame(Status::VALID, $order->myinvois_status);
+        $this->assertSame(Status::VALID, $order->myinvois_preprod_status);
+    }
+
+    #[Test]
+    public function a_null_is_preprod_row_counts_as_prod_like_the_latest_relation() : void
+    {
+        $order = Order::create();
+
+        $old = $this->child($order, ['status' => 'invalid', 'is_preprod' => null]);
+        $this->child($order, ['status' => 'valid', 'is_preprod' => false]);
+
+        $old->update(['status' => 'invalid']);
+
+        $this->assertSame(Status::VALID, $order->fresh()->myinvois_status);
+    }
+
+    #[Test]
+    public function the_status_write_does_not_touch_other_parents() : void
+    {
+        $a = Order::create();
+        $b = Order::create();
+
+        $this->child($a, ['status' => 'valid', 'is_preprod' => false]);
+        $this->child($b, ['status' => 'invalid', 'is_preprod' => false]);
+
+        $this->assertSame(Status::VALID, $a->fresh()->myinvois_status);
+        $this->assertSame(Status::INVALID, $b->fresh()->myinvois_status);
+    }
 }
