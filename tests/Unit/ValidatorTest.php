@@ -23,16 +23,18 @@ class ValidatorTest extends TestCase
     }
 
     #[Test]
-    public function payable_rounding_is_optional_but_must_be_numeric() : void
+    public function payable_rounding_is_optional_but_must_be_a_plain_decimal_with_at_most_two_places() : void
     {
-        foreach ([null, 0, -0.01, '0.02'] as $value) {
+        foreach ([null, 0, -0.01, '0.02', '-0.05'] as $value) {
             $v = $this->validate(DocumentFixture::invoice(['payable_rounding' => $value]));
-            $this->assertTrue($v->passes(), $v->errors()->first());
+            $this->assertTrue($v->passes(), var_export($value, true).': '.$v->errors()->first());
         }
 
-        $v = $this->validate(DocumentFixture::invoice(['payable_rounding' => 'abc']));
-        $this->assertTrue($v->fails());
-        $this->assertSame('Payable rounding amount is invalid', $v->errors()->first('payable_rounding'));
+        foreach (['abc', '1e-9', ' 0.02', '0.001'] as $value) {
+            $v = $this->validate(DocumentFixture::invoice(['payable_rounding' => $value]));
+            $this->assertTrue($v->fails(), var_export($value, true).' should be rejected');
+            $this->assertSame('Payable rounding amount is invalid', $v->errors()->first('payable_rounding'));
+        }
     }
 
     #[Test]
