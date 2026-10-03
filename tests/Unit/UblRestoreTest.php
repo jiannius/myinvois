@@ -71,6 +71,10 @@ class UblRestoreTest extends TestCase
             '<PayableRoundingAmount currencyID="MYR">-0.01</PayableRoundingAmount><PayableAmount currencyID="MYR">105.99</PayableAmount>',
             $this->xmlFixture(),
         );
+
+        // guards against the str_replace silently becoming a no-op if the fixture changes
+        $this->assertStringContainsString('PayableRoundingAmount', $xml);
+
         $flat = UBL::restore($xml);
 
         $this->assertEquals(-0.01, $flat['payable_rounding']);
