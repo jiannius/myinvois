@@ -72,6 +72,21 @@ $document = [
 
 Consolidated submissions persist **one `MyinvoisDocument` row per line item**, with the line `description` stored as `document_number` and the parent invoice number as `consolidate_number`. This lets each underlying sale (typically one host model per line, e.g. a POS receipt) link back to its own MyInvois status via the polymorphic `parent` relation. Available since `v1.1.0`; the legacy convention (every line tagged with classification `004` instead of the flag) still works.
 
+### Rounding adjustment
+
+For an optional rounding amount (e.g. Malaysia's 5-sen rounding), set `payable_rounding` on the document. When non-zero it is sent as `LegalMonetaryTotal/PayableRoundingAmount` (with `currencyID`), between `TaxInclusiveAmount` and `PayableAmount`; when `0`, `null` or missing, nothing is sent. The package does not compute it: you keep the totals consistent, with `grand_total` before rounding, `payable_total` after rounding, and `payable_rounding` the difference. `UBL::restore()` reads it back as `payable_rounding`.
+
+@verbatim
+<code-snippet name="Document with a rounding adjustment" lang="php">
+$document = [
+    // ...
+    'grand_total' => 11.01,      // before rounding
+    'payable_rounding' => -0.01, // optional
+    'payable_total' => 11.00,    // after rounding
+];
+</code-snippet>
+@endverbatim
+
 ### Document lifecycle
 
 A `MyinvoisDocument` row moves through the `Status` enum: `submitted` → `valid` / `invalid` → optionally `cancelled`.

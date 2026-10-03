@@ -222,6 +222,7 @@ The SDK accepts a flat array shape (translated internally to UBL). Below is the 
     'subtotal' => 500,         // required
     'grand_total' => 530,      // required
     'payable_total' => 530,    // required
+    'payable_rounding' => 0,   // optional, rounding adjustment (e.g. -0.01); omitted from the UBL when 0/null
 
     'line_items' => [          // required, min 1
         [

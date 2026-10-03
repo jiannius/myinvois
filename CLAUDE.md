@@ -32,6 +32,10 @@ Submission pipeline inside `submitDocuments()`:
 
 Detection is **per-document** (not per-submission-batch): mixed batches where some documents are consolidated and others aren't are persisted correctly.
 
+## Rounding amount
+
+`payable_rounding` (optional flat key) maps to `LegalMonetaryTotal.0.PayableRoundingAmount.0._` (+ `currencyID`), written between `TaxInclusiveAmount` and `PayableAmount` (UBL 2.1 order) by `UBL::getDocumentTotalsSchema()`, and only when non-zero — a 0/null/missing value emits no element, so existing callers' output is unchanged. Both `restoreJson()` and `restoreXml()` read it back as `payable_rounding`. The package never computes it: the caller keeps `grand_total` (before rounding), `payable_total` (after) and `payable_rounding` consistent. LHDN's published SDK states no Payable = TaxInclusive + Rounding formula (see `docs/lhdn-references.md`).
+
 ## UBL builder conventions
 
 `UBL.php` uses `data_set($schema, 'Invoice.0.X.0._', $value)` heavily. The `.0.` indexes and trailing `._` value keys come from the `Noki\XmlConverter\Convert` JSON↔XML format — they're load-bearing, not arbitrary. When adding fields, follow the existing dotted paths exactly.

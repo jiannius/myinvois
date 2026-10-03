@@ -27,6 +27,7 @@ Rules the codebase encodes today. If LHDN changes any of these, the package need
 - **General Public TIN** — `Enums\TinType::GENERAL_PUBLIC`. Allowed as buyer TIN **only** for consolidated documents (or non-Invoice/Credit/Debit/Refund doc types). Enforced in `Helpers/Validator.php`.
 - **Consolidated MYR 10,000 per-line cap** — LHDN policy that grand totals over MYR 10,000 cannot be consolidated. Validator rule currently **commented out** in `Helpers/Validator.php:43`; the error message is wired up but the rule isn't enforced. Re-enable if/when LHDN clarifies.
 - **UBL 2.1 + XAdES signing** — payload format and signature scheme. `Signature::toJson()`'s exact JSON serialization (no whitespace, unescaped unicode + slashes) is what LHDN canonicalizes against — never reformat.
+- **`PayableRoundingAmount` is optional `[0-1]`** — `cac:LegalMonetaryTotal/cbc:PayableRoundingAmount` (with `currencyID`), described as "Rounding amount added to the amount payable". `PayableAmount` is "inclusive of total taxes chargeable and any rounding adjustment". As of the 2026-10-03 check, the SDK states no Payable = TaxInclusive + Rounding formula and its validation-rule pages list no totals-consistency rule. Emitted from the flat `payable_rounding` key; see `UBL::getDocumentTotalsSchema()`.
 - **Per-endpoint rate limits** — encoded as `perMinute` values on each `callApi()` call site. Mirror the published LHDN limits; update them here if LHDN publishes new caps.
 
 ## When to update this file
