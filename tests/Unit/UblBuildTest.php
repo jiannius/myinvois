@@ -183,11 +183,21 @@ class UblBuildTest extends TestCase
     }
 
     #[Test]
+    public function it_rounds_payable_rounding_to_two_decimals_to_remove_float_noise() : void
+    {
+        $ubl = UBL::build(DocumentFixture::invoice(['payable_rounding' => -0.009999999999999787]));
+
+        $this->assertSame(-0.01, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._'));
+        $this->assertStringContainsString('-0.01', json_encode($ubl));
+        $this->assertStringNotContainsString('0.00999', json_encode($ubl));
+    }
+
+    #[Test]
     public function it_omits_the_payable_rounding_amount_when_zero_null_or_missing() : void
     {
         $threeAmounts = ['TaxExclusiveAmount', 'TaxInclusiveAmount', 'PayableAmount'];
 
-        foreach ([0, 0.0, '0', '0.00', null, ''] as $value) {
+        foreach ([0, 0.0, '0', '0.00', null, '', '0.004', '-0.004', 1e-9] as $value) {
             $ubl = UBL::build(DocumentFixture::invoice(['payable_rounding' => $value]));
             $this->assertSame($threeAmounts, array_keys(data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0')));
         }

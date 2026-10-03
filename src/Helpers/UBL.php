@@ -361,9 +361,13 @@ class UBL
         // optional rounding adjustment (e.g. Malaysia 5-sen rounding). UBL 2.1 orders it
         // after TaxInclusiveAmount and immediately before PayableAmount. The caller keeps
         // the figures consistent: grand_total = before rounding, payable_total = after.
+        // The value is rounded to 2dp here (callers should already pass it rounded) so float
+        // noise like -0.009999999999999787 never reaches the payload; a value that rounds to
+        // zero (e.g. 0.004) emits nothing.
         $payableRounding = data_get($data, 'payable_rounding');
+        $payableRounding = is_numeric($payableRounding) ? round((float) $payableRounding, 2) : 0.0;
 
-        if (is_numeric($payableRounding) && (float) $payableRounding != 0) {
+        if ($payableRounding != 0) {
             data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._', $payableRounding);
             data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0.currencyID', $currency);
         }
