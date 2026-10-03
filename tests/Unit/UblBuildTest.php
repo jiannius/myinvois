@@ -153,6 +153,54 @@ class UblBuildTest extends TestCase
     }
 
     #[Test]
+    public function it_writes_a_negative_payable_rounding_amount_before_payable_amount() : void
+    {
+        $ubl = UBL::build(DocumentFixture::invoice([
+            'grand_total' => 11.01,
+            'payable_rounding' => -0.01,
+            'payable_total' => 11.00,
+        ]));
+
+        $this->assertSame(-0.01, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._'));
+        $this->assertSame('MYR', data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0.currencyID'));
+        $this->assertSame(11.01, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.TaxInclusiveAmount.0._'));
+        $this->assertSame(11.00, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableAmount.0._'));
+
+        // UBL 2.1 order: TaxExclusive, TaxInclusive, PayableRounding, Payable
+        $this->assertSame(
+            ['TaxExclusiveAmount', 'TaxInclusiveAmount', 'PayableRoundingAmount', 'PayableAmount'],
+            array_keys(data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0')),
+        );
+    }
+
+    #[Test]
+    public function it_writes_a_positive_payable_rounding_amount() : void
+    {
+        $ubl = UBL::build(DocumentFixture::invoice(['payable_rounding' => 0.02, 'payable_total' => 530.02]));
+
+        $this->assertSame(0.02, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._'));
+        $this->assertSame('MYR', data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0.currencyID'));
+    }
+
+    #[Test]
+    public function it_omits_the_payable_rounding_amount_when_zero_null_or_missing() : void
+    {
+        $threeAmounts = ['TaxExclusiveAmount', 'TaxInclusiveAmount', 'PayableAmount'];
+
+        foreach ([0, 0.0, '0', '0.00', null, ''] as $value) {
+            $ubl = UBL::build(DocumentFixture::invoice(['payable_rounding' => $value]));
+            $this->assertSame($threeAmounts, array_keys(data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0')));
+        }
+
+        // key missing entirely (the existing-caller case) is identical to the default fixture
+        $this->assertSame($threeAmounts, array_keys($this->node('Invoice.0.LegalMonetaryTotal.0')));
+        $this->assertSame(
+            json_encode($this->ubl),
+            json_encode(UBL::build(DocumentFixture::invoice(['payable_rounding' => 0]))),
+        );
+    }
+
+    #[Test]
     public function it_builds_the_line_item() : void
     {
         $l = 'Invoice.0.InvoiceLine.0.';
