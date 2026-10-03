@@ -76,12 +76,14 @@ Consolidated submissions persist **one `MyinvoisDocument` row per line item**, w
 
 For an optional rounding amount (e.g. Malaysia's 5-sen rounding), set `payable_rounding` on the document. When non-zero it is sent as `LegalMonetaryTotal/PayableRoundingAmount` (with `currencyID`), between `TaxInclusiveAmount` and `PayableAmount`; when `0`, `null` or missing, nothing is sent. The package does not compute it: you keep the totals consistent, with `grand_total` before rounding, `payable_total` after rounding, and `payable_rounding` the difference. `UBL::restore()` reads it back as `payable_rounding`.
 
+Pass `payable_rounding` already rounded to 2 decimal places, e.g. `round($payable - $grand, 2)`: the validator rejects more than 2 decimals, scientific notation and whitespace-padded strings, and the builder rounds to 2dp as a safety net (a value that rounds to `0` sends nothing). `payable_total` must be supplied when `payable_rounding` is non-zero; otherwise `PayableAmount` falls back to `grand_total` and won't reflect the rounding.
+
 @verbatim
 <code-snippet name="Document with a rounding adjustment" lang="php">
 $document = [
     // ...
     'grand_total' => 11.01,      // before rounding
-    'payable_rounding' => -0.01, // optional
+    'payable_rounding' => -0.01, // optional, round($payable - $grand, 2)
     'payable_total' => 11.00,    // after rounding
 ];
 </code-snippet>

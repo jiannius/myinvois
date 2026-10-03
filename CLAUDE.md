@@ -34,7 +34,7 @@ Detection is **per-document** (not per-submission-batch): mixed batches where so
 
 ## Rounding amount
 
-`payable_rounding` (optional flat key) maps to `LegalMonetaryTotal.0.PayableRoundingAmount.0._` (+ `currencyID`), written between `TaxInclusiveAmount` and `PayableAmount` (UBL 2.1 order) by `UBL::getDocumentTotalsSchema()`, and only when non-zero — a 0/null/missing value emits no element, so existing callers' output is unchanged. Both `restoreJson()` and `restoreXml()` read it back as `payable_rounding`. The package never computes it: the caller keeps `grand_total` (before rounding), `payable_total` (after) and `payable_rounding` consistent. LHDN's published SDK states no Payable = TaxInclusive + Rounding formula (see `docs/lhdn-references.md`).
+`payable_rounding` (optional flat key) maps to `LegalMonetaryTotal.0.PayableRoundingAmount.0._` (+ `currencyID`), written between `TaxInclusiveAmount` and `PayableAmount` (UBL 2.1 order) by `UBL::getDocumentTotalsSchema()`, rounded to 2dp by the builder, and only when that rounded value is non-zero — a 0/null/missing/sub-cent value emits no element, so existing callers' output is unchanged. Both `restoreJson()` and `restoreXml()` read it back as `payable_rounding`. The package never computes it: the caller keeps `grand_total` (before rounding), `payable_total` (after) and `payable_rounding` consistent. Whether LHDN enforces Payable = TaxInclusive + Rounding is unconfirmed pending a preprod submission (see `docs/lhdn-references.md`). Validator rule is `nullable|decimal:0,2`.
 
 ## UBL builder conventions
 

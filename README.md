@@ -222,7 +222,7 @@ The SDK accepts a flat array shape (translated internally to UBL). Below is the 
     'subtotal' => 500,         // required
     'grand_total' => 530,      // required
     'payable_total' => 530,    // required
-    'payable_rounding' => 0,   // optional, rounding adjustment (e.g. -0.01); omitted from the UBL when 0/null
+    'payable_rounding' => 0,   // optional, already rounded to 2dp, e.g. round($payable - $grand, 2); omitted from the UBL when it rounds to 0/null
 
     'line_items' => [          // required, min 1
         [
@@ -247,6 +247,8 @@ The SDK accepts a flat array shape (translated internally to UBL). Below is the 
     ],
 ]
 ```
+
+**Rounding adjustment.** `payable_rounding` is optional. Pass it already rounded to 2 decimal places, e.g. `round($payable - $grand, 2)`: the validator rejects more than 2 decimals, scientific notation and padded strings, and the builder rounds to 2dp as a safety net. A value that rounds to `0` (or is `null`/missing) sends nothing. `payable_total` must be supplied when `payable_rounding` is non-zero; otherwise `PayableAmount` falls back to `grand_total` and won't reflect the rounding.
 
 ### Validating before submission
 
