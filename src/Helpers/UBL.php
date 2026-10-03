@@ -358,6 +358,20 @@ class UBL
         data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.TaxInclusiveAmount.0._', $grandTotal);
         data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.TaxInclusiveAmount.0.currencyID', $currency);
 
+        // optional rounding adjustment (e.g. Malaysia 5-sen rounding). UBL 2.1 orders it
+        // after TaxInclusiveAmount and immediately before PayableAmount. The caller keeps
+        // the figures consistent: grand_total = before rounding, payable_total = after.
+        // The value is rounded to 2dp here (callers should already pass it rounded) so float
+        // noise like -0.009999999999999787 never reaches the payload; a value that rounds to
+        // zero (e.g. 0.004) emits nothing.
+        $payableRounding = data_get($data, 'payable_rounding');
+        $payableRounding = is_numeric($payableRounding) ? round((float) $payableRounding, 2) : 0.0;
+
+        if ($payableRounding != 0) {
+            data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._', $payableRounding);
+            data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0.currencyID', $currency);
+        }
+
         data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.PayableAmount.0._', $payableTotal);
         data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.PayableAmount.0.currencyID', $currency);
 
@@ -772,6 +786,7 @@ class UBL
 
         $data['subtotal'] = data_get($ubl, 'Invoice.LegalMonetaryTotal.TaxExclusiveAmount.value');
         $data['grand_total'] = data_get($ubl, 'Invoice.LegalMonetaryTotal.TaxInclusiveAmount.value');
+        $data['payable_rounding'] = data_get($ubl, 'Invoice.LegalMonetaryTotal.PayableRoundingAmount.value');
         $data['payable_total'] = data_get($ubl, 'Invoice.LegalMonetaryTotal.PayableAmount.value');
 
         // if only has 1 line item, the array itself is the line item
@@ -978,6 +993,7 @@ class UBL
 
         $data['subtotal'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.TaxExclusiveAmount.0._');
         $data['grand_total'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.TaxInclusiveAmount.0._');
+        $data['payable_rounding'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._');
         $data['payable_total'] = data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableAmount.0._');
 
         $data['line_items'] = collect(data_get($ubl, 'Invoice.0.InvoiceLine'))

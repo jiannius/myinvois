@@ -41,6 +41,55 @@ class UblRestoreTest extends TestCase
     }
 
     #[Test]
+    public function it_round_trips_payable_rounding_through_restore_json() : void
+    {
+        $built = UBL::build(DocumentFixture::invoice([
+            'grand_total' => 11.01,
+            'payable_rounding' => -0.01,
+            'payable_total' => 11.00,
+        ]));
+        $flat = UBL::restoreJson($built);
+
+        $this->assertSame(11.01, $flat['grand_total']);
+        $this->assertSame(-0.01, $flat['payable_rounding']);
+        $this->assertSame(11.0, (float) $flat['payable_total']);
+    }
+
+    #[Test]
+    public function restore_json_yields_null_payable_rounding_when_absent() : void
+    {
+        $flat = UBL::restoreJson(UBL::build(DocumentFixture::invoice()));
+
+        $this->assertNull($flat['payable_rounding']);
+    }
+
+    #[Test]
+    public function it_restores_payable_rounding_from_xml() : void
+    {
+        $xml = str_replace(
+            '<PayableAmount currencyID="MYR">106</PayableAmount>',
+            '<PayableRoundingAmount currencyID="MYR">-0.01</PayableRoundingAmount><PayableAmount currencyID="MYR">105.99</PayableAmount>',
+            $this->xmlFixture(),
+        );
+
+        // guards against the str_replace silently becoming a no-op if the fixture changes
+        $this->assertStringContainsString('PayableRoundingAmount', $xml);
+
+        $flat = UBL::restore($xml);
+
+        $this->assertEquals(-0.01, $flat['payable_rounding']);
+        $this->assertIsNotArray($flat['payable_rounding']);
+        $this->assertEquals(106, $flat['grand_total']);
+        $this->assertEquals(105.99, $flat['payable_total']);
+    }
+
+    #[Test]
+    public function restore_xml_yields_null_payable_rounding_when_absent() : void
+    {
+        $this->assertNull(UBL::restore($this->xmlFixture())['payable_rounding']);
+    }
+
+    #[Test]
     public function restore_dispatches_a_json_string_to_restore_json() : void
     {
         $json = json_encode(UBL::build(DocumentFixture::invoice()));
