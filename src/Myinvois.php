@@ -160,6 +160,18 @@ class Myinvois
     }
 
     /**
+     * Get the cache key the access token is stored under
+     */
+    protected function getTokenCacheKey() : string
+    {
+        return collect([
+            'myinvois',
+            $this->getSettings('client_id'),
+            $this->getSettings('on_behalf_of'),
+        ])->filter()->join('_');
+    }
+
+    /**
      * Get the token
      */
     public function getToken()
@@ -172,7 +184,7 @@ class Myinvois
             ? 'Missing MyInvois sandbox (preprod) Client ID / Client Secret'
             : 'Missing MyInvois Client ID / Client Secret');
 
-        $cachekey = collect(['myinvois', $clientId, $onBehalfOf])->filter()->join('_');
+        $cachekey = $this->getTokenCacheKey();
         $cache = cache($cachekey);
         $token = data_get($cache, 'access_token');
         $expiry = data_get($cache, 'expired_at');
@@ -197,11 +209,7 @@ class Myinvois
             $response = $http->post(url: $url, data: $data);
         }
         catch (ConnectionException $e) {
-            throw new MyinvoisUnavailableException(
-                'Could not reach MyInvois to authenticate. Please try again later.',
-                endpoint: $url,
-                previous: $e,
-            );
+            throw MyinvoisUnavailableException::fromConnectionException($e, 'Could not reach MyInvois to authenticate. Please try again later.', $url);
         }
 
         if ($response->clientError() && $response->status() !== 429) {
@@ -269,15 +277,14 @@ class Myinvois
 
         $endpoint = $this->getEndpoint($uri);
 
-        try {
-            $result = Http::withToken($token)->$method($endpoint, $data);
-        }
-        catch (ConnectionException $e) {
-            throw new MyinvoisUnavailableException(
-                'Could not reach MyInvois. Please try again later.',
-                endpoint: $endpoint,
-                previous: $e,
-            );
+        $result = $this->sendRequest($method, $endpoint, $data, $token);
+
+        // a 401 means the token we hold is no longer good (revoked, rotated secret, or
+        // expired earlier than our 50 minute cache). Drop it and retry exactly once with
+        // a fresh one -- no loop: a second 401 falls through to throwIfUnrecoverable().
+        if ($result->status() === 401) {
+            cache()->forget($this->getTokenCacheKey());
+            $result = $this->sendRequest($method, $endpoint, $data, $this->getToken());
         }
 
         if ($result->failed()) {
@@ -291,6 +298,21 @@ class Myinvois
         }
 
         return $result;
+    }
+
+    /**
+     * Send one authenticated request, turning a network failure into a typed exception.
+     * The original ConnectionException is deliberately not chained: it carries the
+     * Guzzle request (Authorization header, form body) and the full URL with its query.
+     */
+    protected function sendRequest(string $method, string $endpoint, $data, string $token) : Response
+    {
+        try {
+            return Http::withToken($token)->$method($endpoint, $data);
+        }
+        catch (ConnectionException $e) {
+            throw MyinvoisUnavailableException::fromConnectionException($e, 'Could not reach MyInvois. Please try again later.', $endpoint);
+        }
     }
 
     /**
@@ -309,7 +331,7 @@ class Myinvois
         $status = $result->status();
 
         if ($status === 401) {
-            throw MyinvoisAuthenticationException::fromResponse($result, $endpoint, 'MyInvois rejected the access token (HTTP 401). Please try again.');
+            throw MyinvoisAuthenticationException::fromResponse($result, $endpoint, 'MyInvois rejected the access token again after refreshing it (HTTP 401). Check the Client ID / Client Secret and that they match the selected environment (production vs sandbox).');
         }
 
         if ($status === 429 || $status >= 500) {

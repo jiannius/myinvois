@@ -4,7 +4,6 @@ namespace Jiannius\Myinvois\Exceptions;
 
 use Illuminate\Http\Client\Response;
 use RuntimeException;
-use Throwable;
 
 /**
  * Base class for every failure the SDK raises while talking to MyInvois.
@@ -14,8 +13,9 @@ use Throwable;
  * failure in one place, or a subclass to tell the causes apart.
  *
  * Only plain data is kept (status, endpoint, raw body) -- never the
- * request or response object -- so the exception cannot leak the bearer
- * token if it is serialised or dumped.
+ * request or response object, and never a chained Guzzle / Laravel HTTP
+ * exception (its request carries the bearer token and form body) -- so the
+ * exception cannot leak credentials if it is serialised, dumped or reported.
  */
 class MyinvoisException extends RuntimeException
 {
@@ -24,22 +24,23 @@ class MyinvoisException extends RuntimeException
         protected ?int $status = null,
         protected ?string $endpoint = null,
         protected ?string $responseBody = null,
-        ?Throwable $previous = null,
     ) {
-        parent::__construct($message, $status ?? 0, $previous);
+        parent::__construct($message, $status ?? 0);
+
+        // the endpoint is for diagnostics only: never keep a query string (it can hold an NRIC / TIN)
+        $this->endpoint = $endpoint === null ? null : preg_replace('/[?#].*$/s', '', $endpoint);
     }
 
     /**
      * Build the exception from a failed HTTP response.
      */
-    public static function fromResponse(Response $response, ?string $endpoint = null, ?string $message = null, ?Throwable $previous = null) : static
+    public static function fromResponse(Response $response, ?string $endpoint = null, ?string $message = null) : static
     {
         return new static(
             $message ?? "MyInvois request failed (HTTP {$response->status()})",
             $response->status(),
             $endpoint,
             $response->body(),
-            $previous,
         );
     }
 
@@ -53,7 +54,7 @@ class MyinvoisException extends RuntimeException
     }
 
     /**
-     * The full URL that was called, when known.
+     * The URL that was called (without any query string), when known.
      */
     public function getEndpoint() : ?string
     {

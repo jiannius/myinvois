@@ -2,15 +2,18 @@
 
 namespace Jiannius\Myinvois\Exceptions;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
-use Throwable;
 
 /**
  * MyInvois could not be reached or could not serve the request right now:
  * a network failure / timeout, an HTTP 5xx, or an HTTP 429. These are
  * transient -- showing "try again later" and retrying is appropriate.
  *
- * A network failure carries the original ConnectionException as previous.
+ * A network failure carries a sanitised `getReason()` (the connection error
+ * text with URL query strings stripped). The original ConnectionException is
+ * deliberately NOT chained as previous: its Guzzle request holds the
+ * Authorization header and, on the token endpoint, the client secret.
  */
 class MyinvoisUnavailableException extends MyinvoisException
 {
@@ -19,13 +22,30 @@ class MyinvoisUnavailableException extends MyinvoisException
         ?int $status = null,
         ?string $endpoint = null,
         ?string $responseBody = null,
-        ?Throwable $previous = null,
         protected ?int $retryAfter = null,
+        protected ?string $reason = null,
     ) {
-        parent::__construct($message, $status, $endpoint, $responseBody, $previous);
+        parent::__construct($message, $status, $endpoint, $responseBody);
     }
 
-    public static function fromResponse(Response $response, ?string $endpoint = null, ?string $message = null, ?Throwable $previous = null) : static
+    /**
+     * Build the exception for a network failure / timeout.
+     */
+    public static function fromConnectionException(ConnectionException $e, string $message, ?string $endpoint = null) : static
+    {
+        return new static($message, endpoint: $endpoint, reason: static::sanitiseReason($e->getMessage()));
+    }
+
+    /**
+     * Strip URL query strings / fragments from a connection error text -- the curl
+     * message repeats the full URL, and the query can hold an NRIC or TIN.
+     */
+    protected static function sanitiseReason(string $reason) : string
+    {
+        return trim(preg_replace('/(https?:\/\/[^\s?#]+)[?#]\S*/i', '$1', $reason));
+    }
+
+    public static function fromResponse(Response $response, ?string $endpoint = null, ?string $message = null) : static
     {
         $retryAfter = $response->header('Retry-After');
 
@@ -36,9 +56,17 @@ class MyinvoisUnavailableException extends MyinvoisException
             $response->status(),
             $endpoint,
             $response->body(),
-            $previous,
             is_numeric($retryAfter) ? (int) $retryAfter : null,
         );
+    }
+
+    /**
+     * Why the connection failed (e.g. "cURL error 28: Operation timed out ..."),
+     * with URL query strings removed. Null when the failure was an HTTP response.
+     */
+    public function getReason() : ?string
+    {
+        return $this->reason;
     }
 
     /**

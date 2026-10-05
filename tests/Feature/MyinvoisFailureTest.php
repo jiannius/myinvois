@@ -215,18 +215,74 @@ class MyinvoisFailureTest extends TestCase
         $this->assertFalse($called);
     }
 
-    #[Test]
-    public function a_401_on_an_api_call_throws_an_authentication_exception() : void
+    protected function requestsTo(string $needle) : int
     {
-        $this->fakeApi(['*documents/recent*' => Http::response(['message' => 'expired'], 401)]);
+        return Http::recorded(fn ($request) => str_contains($request->url(), $needle))->count();
+    }
+
+    #[Test]
+    public function a_401_drops_the_cached_token_and_retries_once_with_a_fresh_one() : void
+    {
+        $this->fakeApi(['*documents/recent*' => Http::sequence()
+            ->push(['message' => 'expired'], 401)
+            ->push(['result' => ['ok']], 200)]);
+        $called = 0;
+
+        $result = $this->myinvois()
+            ->setFailedCallback(function ($r) use (&$called) {
+                $called++;
+                return $r;
+            })
+            ->getRecentDocuments();
+
+        $this->assertSame(['result' => ['ok']], $result);
+        $this->assertSame(2, $this->requestsTo('/connect/token'));
+        $this->assertSame(2, $this->requestsTo('documents/recent'));
+        // the retry recovered, so there was no failure to call back about
+        $this->assertSame(0, $called);
+    }
+
+    #[Test]
+    public function a_second_401_throws_an_authentication_exception_and_is_not_retried_again() : void
+    {
+        $this->fakeApi(['*documents/recent*' => Http::sequence()
+            ->push(['message' => 'expired'], 401)
+            ->push(['message' => 'still bad'], 401)
+            ->push(['result' => ['never reached']], 200)]);
+        $called = 0;
 
         try {
-            $this->myinvois()->getRecentDocuments();
+            $this->myinvois()
+                ->setFailedCallback(function ($r) use (&$called) {
+                    $called++;
+                    return $r;
+                })
+                ->getRecentDocuments();
             $this->fail('Expected MyinvoisAuthenticationException.');
         } catch (MyinvoisAuthenticationException $e) {
             $this->assertSame(401, $e->getStatus());
-            $this->assertSame(['message' => 'expired'], $e->getResponseData());
+            $this->assertSame(['message' => 'still bad'], $e->getResponseData());
+            $this->assertStringContainsString('after refreshing', $e->getMessage());
         }
+
+        $this->assertSame(2, $this->requestsTo('documents/recent'));
+        $this->assertSame(2, $this->requestsTo('/connect/token'));
+        // failedCallback runs once, on the final response
+        $this->assertSame(1, $called);
+    }
+
+    #[Test]
+    public function a_403_is_not_retried() : void
+    {
+        $this->fakeApi(['*documents/recent*' => Http::response('', 403)]);
+
+        try {
+            $this->myinvois()->getRecentDocuments();
+        } catch (MyinvoisPermissionException) {
+        }
+
+        $this->assertSame(1, $this->requestsTo('documents/recent'));
+        $this->assertSame(1, $this->requestsTo('/connect/token'));
     }
 
     // ---- token ---------------------------------------------------------
@@ -312,31 +368,81 @@ class MyinvoisFailureTest extends TestCase
 
     // ---- network -------------------------------------------------------
 
-    #[Test]
-    public function a_network_failure_on_an_api_call_throws_unavailable_wrapping_the_original() : void
+    /**
+     * Build the exception Laravel throws for a network failure: a Laravel
+     * ConnectionException wrapping a real Guzzle ConnectException that carries the
+     * PSR-7 request (bearer token / client secret) and a message with the full URL.
+     */
+    protected function laravelConnectionException(string $url, array $headers = [], string $body = '') : ConnectionException
     {
-        $this->fakeApi(['*documents/recent*' => fn () => throw new ConnectionException('cURL error 6: could not resolve host')]);
+        $guzzle = new \GuzzleHttp\Exception\ConnectException(
+            "cURL error 28: Operation timed out after 30001 milliseconds (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for {$url}",
+            new \GuzzleHttp\Psr7\Request('GET', $url, $headers, $body),
+        );
+
+        return new ConnectionException($guzzle->getMessage(), 0, $guzzle);
+    }
+
+    #[Test]
+    public function a_network_failure_on_an_api_call_throws_unavailable_without_chaining_the_original() : void
+    {
+        $url = 'https://preprod-api.myinvois.hasil.gov.my/api/v1.0/taxpayer/search/tin?idType=NRIC&idValue=900101015555';
+        $this->fakeApi(['*taxpayer/search/tin*' => fn () => throw $this->laravelConnectionException(
+            $url,
+            ['Authorization' => 'Bearer tok'],
+        )]);
 
         try {
-            $this->myinvois()->getRecentDocuments();
+            $this->myinvois()->searchTaxpayerTIN('NRIC', '900101015555');
             $this->fail('Expected MyinvoisUnavailableException.');
         } catch (MyinvoisUnavailableException $e) {
             $this->assertNull($e->getStatus());
-            $this->assertStringContainsString('documents/recent', $e->getEndpoint());
-            $this->assertInstanceOf(ConnectionException::class, $e->getPrevious());
+            $this->assertStringContainsString('taxpayer/search/tin', $e->getEndpoint());
+            $this->assertStringNotContainsString('?', $e->getEndpoint());
+            // the Guzzle exception (and with it the request + Authorization header) is not reachable
+            $this->assertNull($e->getPrevious());
+            $this->assertStringContainsString('timed out', $e->getReason());
+
+            foreach ([$e->getMessage(), $e->getReason(), $e->getEndpoint(), (string) $e->getResponseBody()] as $exposed) {
+                $this->assertStringNotContainsString('900101015555', $exposed);
+                $this->assertStringNotContainsString('idValue', $exposed);
+                $this->assertStringNotContainsString('tok', $exposed);
+            }
         }
     }
 
     #[Test]
-    public function a_network_failure_on_the_token_request_throws_unavailable() : void
+    public function a_network_failure_on_the_token_request_throws_unavailable_without_the_client_secret() : void
     {
-        Http::fake(['*/connect/token' => fn () => throw new ConnectionException('timeout')]);
+        Http::fake(['*/connect/token' => fn () => throw $this->laravelConnectionException(
+            'https://preprod-api.myinvois.hasil.gov.my/connect/token?client_secret=s3cr3t',
+            [],
+            'client_id=id&client_secret=s3cr3t',
+        )]);
 
         try {
             $this->myinvois()->getToken();
             $this->fail('Expected MyinvoisUnavailableException.');
         } catch (MyinvoisUnavailableException $e) {
-            $this->assertInstanceOf(ConnectionException::class, $e->getPrevious());
+            $this->assertNull($e->getPrevious());
+            $this->assertStringContainsString('/connect/token', $e->getEndpoint());
+
+            foreach ([$e->getMessage(), $e->getReason(), $e->getEndpoint()] as $exposed) {
+                $this->assertStringNotContainsString('s3cr3t', $exposed);
+            }
+        }
+    }
+
+    #[Test]
+    public function a_network_failure_reason_without_a_url_is_kept_as_is() : void
+    {
+        $this->fakeApi(['*documents/recent*' => fn () => throw new ConnectionException('cURL error 6: Could not resolve host: api.example')]);
+
+        try {
+            $this->myinvois()->getRecentDocuments();
+            $this->fail('Expected MyinvoisUnavailableException.');
+        } catch (MyinvoisUnavailableException $e) {
+            $this->assertSame('cURL error 6: Could not resolve host: api.example', $e->getReason());
         }
     }
 
