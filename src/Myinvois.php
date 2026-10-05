@@ -38,6 +38,17 @@ class Myinvois
     public const DEFAULT_TIMEOUT = 60;
 
     /**
+     * Total timeout (seconds) for the post-submit status poll, so the worst case of
+     * submitDocuments() stays reasonable. The configured timeout wins when it is lower.
+     */
+    public const POLL_TIMEOUT = 15;
+
+    /**
+     * Temporary ceiling on the total timeout, set only while the post-submit poll runs.
+     */
+    protected int|float|null $timeoutCap = null;
+
+    /**
      * Swap the `myinvois` container binding for an in-memory fake (no network,
      * no signing, no sleeping). Host-app code calling app('myinvois')->... then
      * hits the fake. Returns it so tests can configure and assert against it.
@@ -190,6 +201,17 @@ class Myinvois
     }
 
     /**
+     * The total timeout for the next request: the resolved setting, lowered to the
+     * temporary cap (see pollSubmission()) when one is active -- never raised by it.
+     */
+    protected function getRequestTimeout() : int|float
+    {
+        $timeout = $this->getSettings('timeout');
+
+        return $this->timeoutCap === null ? $timeout : min($timeout, $this->timeoutCap);
+    }
+
+    /**
      * Get the endpoint
      */
     public function getEndpoint($uri)
@@ -245,7 +267,7 @@ class Myinvois
 
         $http = Http::asForm()
             ->connectTimeout($this->getSettings('connect_timeout'))
-            ->timeout($this->getSettings('timeout'));
+            ->timeout($this->getRequestTimeout());
 
         if ($onBehalfOf) $http->withHeaders(['onbehalfof' => $onBehalfOf]);
 
@@ -361,7 +383,7 @@ class Myinvois
         try {
             return Http::withToken($token)
                 ->connectTimeout($this->getSettings('connect_timeout'))
-                ->timeout($this->getSettings('timeout'))
+                ->timeout($this->getRequestTimeout())
                 ->$method($endpoint, $data);
         }
         catch (ConnectionException $e) {
@@ -655,7 +677,7 @@ class Myinvois
             // and may resubmit an accepted invoice. Leave the rows `submitted`; a later
             // getSubmission() call flips them.
             try {
-                $this->getSubmission($submissionUid);
+                $this->pollSubmission($submissionUid);
             }
             catch (MyinvoisException) {
                 break;
@@ -666,6 +688,23 @@ class Myinvois
         }
 
         return $myinvoisDocuments;
+    }
+
+    /**
+     * getSubmission() with a short total timeout (POLL_TIMEOUT, or the configured one if
+     * lower) for the post-submit poll. The cap is scoped to this call and always restored.
+     */
+    protected function pollSubmission($submissionUid)
+    {
+        $previous = $this->timeoutCap;
+        $this->timeoutCap = $previous === null ? static::POLL_TIMEOUT : min($previous, static::POLL_TIMEOUT);
+
+        try {
+            return $this->getSubmission($submissionUid);
+        }
+        finally {
+            $this->timeoutCap = $previous;
+        }
     }
 
     /**
