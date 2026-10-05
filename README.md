@@ -125,7 +125,7 @@ When **every** line item across all submitted documents has only classification 
 
 ### Failure handling
 
-A non-2xx response from MyInvois passes through `failedCallback` if set:
+A non-2xx response (other than 403) from MyInvois passes through `failedCallback` if set:
 
 ```php
 app('myinvois')->setFailedCallback(function ($response) {
@@ -137,7 +137,21 @@ app('myinvois')->setFailedCallback(function ($response) {
 });
 ```
 
-A 403 always throws (`Permissions denied from MyInvois Portal`). A 4xx during token acquisition aborts with a human-friendly message derived from LHDN's OAuth error — e.g. `invalid_client` becomes *"MyInvois rejected the API credentials…"* (see `getTokenErrorMessage`). Preprod and prod credentials never fall back to one another: requesting preprod without sandbox credentials throws `Missing MyInvois sandbox (preprod) Client ID / Client Secret` rather than silently using prod creds against the preprod endpoint.
+Failures surface as typed exceptions under `Jiannius\Myinvois\Exceptions`. All extend `MyinvoisException` (a `RuntimeException`), so `catch (\RuntimeException)` / `catch (\Exception)` keep working.
+
+| Exception | Raised for |
+|---|---|
+| `MyinvoisUnavailableException` | Network failure or timeout (the original `ConnectionException` is `getPrevious()`), HTTP 5xx, HTTP 429 (`getRetryAfter()`), or a 200 from the token endpoint with no token. Transient: show "try again later". |
+| `MyinvoisAuthenticationException` | Any 4xx from the OAuth token endpoint (e.g. `invalid_client` becomes *"MyInvois rejected the API credentials…"*, see `getTokenErrorMessage`), or a 401 from an API call. |
+| `MyinvoisPermissionException` | HTTP 403 (`Permissions denied from MyInvois Portal`). Does not run `failedCallback`. |
+
+Each carries `getStatus()` (HTTP status, `null` for a network failure), `getEndpoint()`, `getResponseBody()` (raw, may be HTML) and `getResponseData()` (decoded JSON or `null`). The message never contains the raw body.
+
+Any other 4xx (400, 404, 422…) is an ordinary LHDN answer and is **returned**, not thrown: for example a validation rejection from `submitDocuments()` comes back as the JSON body, and `validateTaxpayerTIN()` returns `false` on a 404. `cancelDocument()` / `getDocumentDetails()` do not write a non-2xx response onto the local `myinvois_documents` row.
+
+`failedCallback` runs first for every non-403 failure; if it returns a successful response that response is used and nothing is thrown. If the response is still a 401 / 429 / 5xx afterwards, the exception is thrown.
+
+Preprod and prod credentials never fall back to one another: requesting preprod without sandbox credentials throws `Missing MyInvois sandbox (preprod) Client ID / Client Secret` rather than silently using prod creds against the preprod endpoint.
 
 ## Document shape
 

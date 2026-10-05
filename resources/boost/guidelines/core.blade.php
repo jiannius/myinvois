@@ -121,6 +121,36 @@ $shareUrl = $doc->validation_link; // public LHDN URL once the doc is VALID
 
 Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when **you are the buyer** rejecting a doc someone else issued to you.
 
+### Handling API failures
+
+Every failure talking to MyInvois is a typed exception under `Jiannius\Myinvois\Exceptions`, all extending `MyinvoisException` (a `RuntimeException`). Catch the base type to show one message, or a subclass to react differently:
+
+- `MyinvoisUnavailableException` — network failure/timeout, HTTP 5xx or 429, or an unusable token response. Transient: tell the user to try again later. For a network failure `getPrevious()` is the original `ConnectionException`; for a 429 `getRetryAfter()` may hold seconds.
+- `MyinvoisAuthenticationException` — OAuth token rejected (4xx from `/connect/token`, e.g. wrong client id/secret or prod vs sandbox mismatch) or a 401. Retrying won't help; fix the credentials.
+- `MyinvoisPermissionException` — HTTP 403 (taxpayer/intermediary not permitted).
+
+Each has `getStatus()` (null on a network failure), `getEndpoint()`, `getResponseBody()` and `getResponseData()`. Don't put the raw body in a user-facing message — a gateway error is usually HTML.
+
+@verbatim
+<code-snippet name="Catch MyInvois failures" lang="php">
+use Jiannius\Myinvois\Exceptions\MyinvoisException;
+use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
+
+try {
+    app('myinvois')->cancelDocument($doc->document_uuid, reason: 'Wrong buyer details');
+} catch (MyinvoisUnavailableException $e) {
+    // 5xx / 429 / network — safe to retry later
+    return back()->with('error', 'MyInvois is not responding. Please try again later.');
+} catch (MyinvoisException $e) {
+    // auth, permission, anything else from the SDK
+    report($e);
+    return back()->with('error', $e->getMessage());
+}
+</code-snippet>
+@endverbatim
+
+Other 4xx responses (400, 404, 422...) are **not** thrown: they come back as the LHDN JSON body (e.g. `submitDocuments()` returns the rejection details; `validateTaxpayerTIN()` returns `false` on 404), and `cancelDocument()` / `getDocumentDetails()` leave the local `MyinvoisDocument` untouched. A failed `setFailedCallback()` return value still replaces the response before any exception is considered. After an `Unavailable` error from `submitDocuments()` (especially a timeout) the submission may still have reached LHDN — check `getRecentDocuments()` before resubmitting.
+
 ### Host-model integration
 
 Mix `HasMyinvoisDocument` into models that own invoices (a `Sale`, `Order`, `Invoice`, etc.). The trait wires the polymorphic relations, casts, observer, and helpers. Preprod and production are tracked in separate columns so they never collide.
