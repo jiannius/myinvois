@@ -141,15 +141,23 @@ Failures surface as typed exceptions under `Jiannius\Myinvois\Exceptions`. All e
 
 | Exception | Raised for |
 |---|---|
-| `MyinvoisUnavailableException` | Network failure or timeout (the original `ConnectionException` is `getPrevious()`), HTTP 5xx, HTTP 429 (`getRetryAfter()`), or a 200 from the token endpoint with no token. Transient: show "try again later". |
-| `MyinvoisAuthenticationException` | Any 4xx from the OAuth token endpoint (e.g. `invalid_client` becomes *"MyInvois rejected the API credentials…"*, see `getTokenErrorMessage`), or a 401 from an API call. |
+| `MyinvoisUnavailableException` | Network failure or timeout (`getReason()` holds the connection error text with URL query strings stripped; the original exception is not chained), HTTP 5xx, HTTP 429 (`getRetryAfter()`), a 408 or 429 from the token endpoint, or a 200 from the token endpoint with no token. Transient: show "try again later". |
+| `MyinvoisAuthenticationException` | Any 4xx from the OAuth token endpoint except 408/429 (e.g. `invalid_client` becomes *"MyInvois rejected the API credentials…"*, see `getTokenErrorMessage`), or a 401 from an API call that is still a 401 after one retry with a fresh token. |
 | `MyinvoisPermissionException` | HTTP 403 (`Permissions denied from MyInvois Portal`). Does not run `failedCallback`. |
 
-Each carries `getStatus()` (HTTP status, `null` for a network failure), `getEndpoint()`, `getResponseBody()` (raw, may be HTML) and `getResponseData()` (decoded JSON or `null`). The message never contains the raw body.
+Each carries `getStatus()` (HTTP status, `null` for a network failure), `getEndpoint()` (never includes a query string), `getResponseBody()` (raw, may be HTML) and `getResponseData()` (decoded JSON or `null`). The message never contains the raw body. The original Laravel/Guzzle connection exception is deliberately **not** chained (`getPrevious()` is `null`): it carries the request, including the `Authorization` header.
+
+On a 401 from an API call the cached access token is discarded and the call is retried **once** with a freshly requested token. Only a second 401 throws `MyinvoisAuthenticationException`. A 403 is never retried.
 
 Any other 4xx (400, 404, 422…) is an ordinary LHDN answer and is **returned**, not thrown: for example a validation rejection from `submitDocuments()` comes back as the JSON body, and `validateTaxpayerTIN()` returns `false` on a 404. `cancelDocument()` / `getDocumentDetails()` do not write a non-2xx response onto the local `myinvois_documents` row.
 
-`failedCallback` runs first for every non-403 failure; if it returns a successful response that response is used and nothing is thrown. If the response is still a 401 / 429 / 5xx afterwards, the exception is thrown.
+`failedCallback` runs once per call, on the final response (after the 401 retry, if any), for every non-403 failure; if it returns a successful response that response is used and nothing is thrown. If the response is still a 401 / 429 / 5xx afterwards, the exception is thrown. It is not used for the token request.
+
+**After an `Unavailable` error from `submitDocuments()` the submission may already have reached LHDN** (a timeout can happen after LHDN accepted the request). Check with `getSubmission()` or `getRecentDocuments()` before resubmitting. Once LHDN has accepted a submission, the follow-up status polling never throws: if it fails, the local rows stay `submitted` and `submitDocuments()` returns normally; call `getSubmission()` later to refresh them.
+
+Configuration errors (missing client id / secret, missing private key / certificate, missing sandbox credentials) are **not** converted: they are still thrown as a plain `\Exception`.
+
+**Known limitation:** `MyinvoisFake` (the test double) cannot simulate these failures yet; test your error handling with `Http::fake()` against the real class.
 
 Preprod and prod credentials never fall back to one another: requesting preprod without sandbox credentials throws `Missing MyInvois sandbox (preprod) Client ID / Client Secret` rather than silently using prod creds against the preprod endpoint.
 
