@@ -4,7 +4,7 @@
 
 ### Setup
 
-Settings cascade: explicit `set*()` → `config('services.myinvois.*')` → preprod auto-enabled outside the `production` environment. The OAuth token is cached per `clientId + onBehalfOf` for 50 minutes, and `callApi()` already honors LHDN's per-endpoint rate limits — don't add your own throttling.
+Settings cascade: explicit `set*()` → `config('services.myinvois.*')` → preprod auto-enabled outside the `production` environment. The OAuth token is cached per `clientId + onBehalfOf` for 50 minutes, and `callApi()` already honors LHDN's per-endpoint rate limits — don't add your own throttling. Every HTTP call (token and API) has a connect timeout (default 10s) and total timeout (default 60s); override with `setConnectTimeout($seconds)` / `setTimeout($seconds)` or `config('services.myinvois.connect_timeout')` / `config('services.myinvois.timeout')`. A timeout throws `MyinvoisUnavailableException`.
 
 @verbatim
 <code-snippet name="Configure the singleton" lang="php">
@@ -16,6 +16,9 @@ $myinvois = app('myinvois')
 
 // Optional: act on behalf of another taxpayer (intermediary flow)
 $myinvois->setOnBehalfOf(tin: 'C20880050010', brn: '202301234567');
+
+// Optional: HTTP timeouts in seconds (defaults: connect 10, total 60)
+$myinvois->setConnectTimeout(5)->setTimeout(120);
 
 // Optional: hook failed API responses (logging, alerts)
 $myinvois->setFailedCallback(fn ($response) => report(new \Exception($response->body())));
@@ -119,7 +122,7 @@ $shareUrl = $doc->validation_link; // public LHDN URL once the doc is VALID
 </code-snippet>
 @endverbatim
 
-Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when **you are the buyer** rejecting a doc someone else issued to you.
+Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when **you are the buyer** rejecting a doc someone else issued to you. `rejectDocument()` sends a `PUT` and returns LHDN's JSON; unlike `cancelDocument()` it does not write local `myinvois_documents` state.
 
 ### Handling API failures
 

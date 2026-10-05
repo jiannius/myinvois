@@ -30,6 +30,14 @@ class Myinvois
     public $failedCallback;
 
     /**
+     * Default HTTP timeouts, in seconds. The total timeout is deliberately generous so a
+     * slow but valid documentsubmissions POST of a large batch is not cut off.
+     */
+    public const DEFAULT_CONNECT_TIMEOUT = 10;
+
+    public const DEFAULT_TIMEOUT = 60;
+
+    /**
      * Swap the `myinvois` container binding for an in-memory fake (no network,
      * no signing, no sleeping). Host-app code calling app('myinvois')->... then
      * hits the fake. Returns it so tests can configure and assert against it.
@@ -101,6 +109,24 @@ class Myinvois
     }
 
     /**
+     * Set the connect timeout in seconds (how long to wait to establish the connection)
+     */
+    public function setConnectTimeout($seconds)
+    {
+        $this->settings['connect_timeout'] = $seconds;
+        return $this;
+    }
+
+    /**
+     * Set the total request timeout in seconds
+     */
+    public function setTimeout($seconds)
+    {
+        $this->settings['timeout'] = $seconds;
+        return $this;
+    }
+
+    /**
      * Set the failed callback
      */
     public function setFailedCallback($callback)
@@ -137,6 +163,8 @@ class Myinvois
             'private_key' => data_get($this->settings, 'private_key') ?? config('services.myinvois.private_key'),
             'certificate' => data_get($this->settings, 'certificate') ?? config('services.myinvois.certificate'),
             'preprod' => $preprod,
+            'connect_timeout' => $this->resolveTimeout('connect_timeout', static::DEFAULT_CONNECT_TIMEOUT),
+            'timeout' => $this->resolveTimeout('timeout', static::DEFAULT_TIMEOUT),
         ];
 
         if (data_get($settings, 'on_behalf_of') === config('services.myinvois.client_tin')) {
@@ -146,6 +174,19 @@ class Myinvois
         // dd($settings);
 
         return $key ? data_get($settings, $key) : $settings;
+    }
+
+    /**
+     * Resolve a timeout in seconds: setter -> config('services.myinvois.<key>') -> default.
+     * Anything that is not a positive number (0 would mean "wait forever") is ignored.
+     */
+    protected function resolveTimeout(string $key, int $default) : int|float
+    {
+        foreach ([data_get($this->settings, $key), config('services.myinvois.'.$key)] as $value) {
+            if (is_numeric($value) && $value > 0) return $value + 0;
+        }
+
+        return $default;
     }
 
     /**
@@ -202,7 +243,10 @@ class Myinvois
             'scope' => 'InvoicingAPI',
         ];
 
-        $http = Http::asForm();
+        $http = Http::asForm()
+            ->connectTimeout($this->getSettings('connect_timeout'))
+            ->timeout($this->getSettings('timeout'));
+
         if ($onBehalfOf) $http->withHeaders(['onbehalfof' => $onBehalfOf]);
 
         try {
@@ -315,7 +359,10 @@ class Myinvois
     protected function sendRequest(string $method, string $endpoint, $data, string $token) : Response
     {
         try {
-            return Http::withToken($token)->$method($endpoint, $data);
+            return Http::withToken($token)
+                ->connectTimeout($this->getSettings('connect_timeout'))
+                ->timeout($this->getSettings('timeout'))
+                ->$method($endpoint, $data);
         }
         catch (ConnectionException $e) {
             throw MyinvoisUnavailableException::fromConnectionException($e, 'Could not reach MyInvois. Please try again later.', $endpoint);
