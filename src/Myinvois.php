@@ -2,9 +2,14 @@
 
 namespace Jiannius\Myinvois;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
+use Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException;
+use Jiannius\Myinvois\Exceptions\MyinvoisPermissionException;
+use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
 use Jiannius\Myinvois\Helpers\Sample;
 use Jiannius\Myinvois\Helpers\Signature;
 use Jiannius\Myinvois\Helpers\UBL;
@@ -187,11 +192,32 @@ class Myinvois
         $http = Http::asForm();
         if ($onBehalfOf) $http->withHeaders(['onbehalfof' => $onBehalfOf]);
 
-        $response = $http->post(url: $url, data: $data);
+        try {
+            $response = $http->post(url: $url, data: $data);
+        }
+        catch (ConnectionException $e) {
+            throw new MyinvoisUnavailableException(
+                'Could not reach MyInvois to authenticate. Please try again later.',
+                endpoint: $url,
+                previous: $e,
+            );
+        }
 
-        if ($response->clientError()) abort($response->status(), $this->getTokenErrorMessage($response));
+        if ($response->clientError() && $response->status() !== 429) {
+            throw MyinvoisAuthenticationException::fromResponse($response, $url, $this->getTokenErrorMessage($response));
+        }
 
-        $response->throw();
+        if ($response->failed()) {
+            throw MyinvoisUnavailableException::fromResponse($response, $url);
+        }
+
+        if (!is_array($response->json()) || !data_get($response->json(), 'access_token')) {
+            throw MyinvoisUnavailableException::fromResponse(
+                $response,
+                $url,
+                "MyInvois returned an unexpected response while authenticating (HTTP {$response->status()}). Please try again later.",
+            );
+        }
 
         cache()->put($cachekey, [
             ...$response->json(),
@@ -224,7 +250,7 @@ class Myinvois
         $method = strtolower($method);
         $token = $this->getToken();
 
-        if (!$token) abort(500, 'Missing MyInvois API access token');
+        if (!$token) throw new MyinvoisAuthenticationException('Missing MyInvois API access token');
 
         if ($perMinute) {
             $timeout = 60 / $perMinute;
@@ -241,14 +267,53 @@ class Myinvois
         }
 
         $endpoint = $this->getEndpoint($uri);
-        $result = Http::withToken($token)->$method($endpoint, $data);
+
+        try {
+            $result = Http::withToken($token)->$method($endpoint, $data);
+        }
+        catch (ConnectionException $e) {
+            throw new MyinvoisUnavailableException(
+                'Could not reach MyInvois. Please try again later.',
+                endpoint: $endpoint,
+                previous: $e,
+            );
+        }
 
         if ($result->failed()) {
-            throw_if($result->status() === 403, 'Permissions denied from MyInvois Portal');
+            if ($result->status() === 403) {
+                throw MyinvoisPermissionException::fromResponse($result, $endpoint, 'Permissions denied from MyInvois Portal');
+            }
+
             if ($callback = $this->failedCallback) $result = $callback($result);
+
+            $this->throwIfUnrecoverable($result, $endpoint);
         }
 
         return $result;
+    }
+
+    /**
+     * Turn a failed response the failed callback did not recover into a typed
+     * exception, so a failure is never reported as success.
+     *
+     * Only auth (401), throttling (429) and server (5xx) failures throw. Any
+     * other 4xx (400/404/422...) is an application-level answer from LHDN --
+     * e.g. a validation rejection with a JSON body -- and is still returned to
+     * the caller as before.
+     */
+    protected function throwIfUnrecoverable($result, string $endpoint) : void
+    {
+        if (!$result instanceof Response || !$result->failed()) return;
+
+        $status = $result->status();
+
+        if ($status === 401) {
+            throw MyinvoisAuthenticationException::fromResponse($result, $endpoint, 'MyInvois rejected the access token (HTTP 401). Please try again.');
+        }
+
+        if ($status === 429 || $status >= 500) {
+            throw MyinvoisUnavailableException::fromResponse($result, $endpoint);
+        }
     }
 
     /**
@@ -346,7 +411,8 @@ class Myinvois
             perMinute: 60,
         );
 
-        $this->updateMyinvoisDocuments($api->json());
+        // never write a failed (4xx) response back onto the local record
+        if ($api->successful()) $this->updateMyinvoisDocuments($api->json());
 
         return $api->json();
     }
@@ -425,7 +491,8 @@ class Myinvois
             perMinute: 12,
         );
 
-        $this->updateMyinvoisDocuments([...$api->json(), 'reason' => $reason]);
+        // never write a failed (4xx) response back onto the local record
+        if ($api->successful()) $this->updateMyinvoisDocuments([...(array) $api->json(), 'reason' => $reason]);
 
         return $api->json();
     }
