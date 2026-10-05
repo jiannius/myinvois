@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException;
+use Jiannius\Myinvois\Exceptions\MyinvoisException;
 use Jiannius\Myinvois\Exceptions\MyinvoisPermissionException;
 use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
 use Jiannius\Myinvois\Helpers\Sample;
@@ -560,7 +561,18 @@ class Myinvois
         $max = 3;
         while ($try <= $max) {
             sleep(2);
-            $this->getSubmission($submissionUid);
+
+            // the documents are already accepted and saved locally at this point, so a
+            // failed poll must never throw -- the caller would lose the submission uid
+            // and may resubmit an accepted invoice. Leave the rows `submitted`; a later
+            // getSubmission() call flips them.
+            try {
+                $this->getSubmission($submissionUid);
+            }
+            catch (MyinvoisException) {
+                break;
+            }
+
             if ($model::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
             else $try = $max + 1;
         }

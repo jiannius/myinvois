@@ -133,6 +133,38 @@ class MyinvoisFailureTest extends TestCase
         $this->assertSame(0, MyinvoisDocument::count());
     }
 
+    // ---- polling after a successful submission ---------------------------
+
+    #[Test]
+    #[\PHPUnit\Framework\Attributes\DataProvider('pollingFailures')]
+    public function a_failing_status_poll_after_an_accepted_submission_does_not_throw(int $pollStatus) : void
+    {
+        $this->fakeApi(['*documentsubmissions*' => fn ($request) => $request->method() === 'POST'
+            ? Http::response(['submissionUid' => 'SUB1', 'acceptedDocuments' => [['uuid' => 'UID1', 'invoiceCodeNumber' => 'INV-0001']]], 202)
+            : Http::response('<html>nope</html>', $pollStatus)]);
+
+        $result = $this->myinvois()
+            ->setPrivateKey(CertFixture::privateKey())
+            ->setCertificate(CertFixture::certificate())
+            ->submitDocuments([DocumentFixture::invoice()]);
+
+        $this->assertArrayHasKey('myinvois_documents', $result);
+        $this->assertSame('SUB1', data_get($result, 'response.submissionUid'));
+        $this->assertCount(1, $result['myinvois_documents']);
+        $this->assertSame(1, MyinvoisDocument::count());
+        $this->assertSame('submitted', MyinvoisDocument::first()->status->value);
+    }
+
+    public static function pollingFailures() : array
+    {
+        return [
+            '502' => [502],
+            '429' => [429],
+            '401' => [401],
+            '403' => [403],
+        ];
+    }
+
     // ---- 429 -----------------------------------------------------------
 
     #[Test]
