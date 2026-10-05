@@ -587,6 +587,9 @@ class Myinvois
      */
     public function rejectDocument($uid, $reason = null)
     {
+        // LHDN marks `reason` as required; fail before any network call
+        if (blank($reason)) throw new \InvalidArgumentException('A rejection reason is required by LHDN');
+
         $api = $this->callApi(
             uri: 'documents/state/'.$uid.'/state',
             method: 'PUT',

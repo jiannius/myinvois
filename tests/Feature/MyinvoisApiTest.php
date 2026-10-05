@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Http;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
 use Jiannius\Myinvois\Tests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 
 class MyinvoisApiTest extends TestCase
@@ -279,6 +280,56 @@ class MyinvoisApiTest extends TestCase
             && $r->data() === ['status' => 'rejected', 'reason' => 'Not mine']
             && $r->isJson());
         Http::assertNotSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), 'documents/state'));
+    }
+
+    #[Test]
+    #[DataProvider('blankReasons')]
+    public function reject_document_requires_a_reason_before_any_network_call(mixed $reason) : void
+    {
+        Http::fake();
+
+        try {
+            $this->myinvois()->rejectDocument('UID1', $reason);
+            $this->fail('Expected InvalidArgumentException.');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame('A rejection reason is required by LHDN', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    #[Test]
+    public function reject_document_without_a_reason_argument_throws() : void
+    {
+        Http::fake();
+
+        try {
+            $this->myinvois()->rejectDocument('UID1');
+            $this->fail('Expected InvalidArgumentException.');
+        } catch (\InvalidArgumentException) {
+            Http::assertNothingSent();
+        }
+    }
+
+    public static function blankReasons() : array
+    {
+        return [
+            'null' => [null],
+            'empty string' => [''],
+            'whitespace only' => ['   '],
+        ];
+    }
+
+    #[Test]
+    public function reject_document_with_a_reason_still_sends_the_put() : void
+    {
+        $this->fakeApi(['*documents/state/UID1/state*' => Http::response(['status' => 'requested'])]);
+
+        $this->myinvois()->rejectDocument('UID1', 'Goods not received');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PUT'
+            && str_contains($r->url(), 'documents/state/UID1/state')
+            && $r['reason'] === 'Goods not received');
     }
 
     #[Test]
