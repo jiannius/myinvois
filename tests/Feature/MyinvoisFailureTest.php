@@ -342,6 +342,42 @@ class MyinvoisFailureTest extends TestCase
     }
 
     #[Test]
+    public function a_token_408_throws_unavailable_like_a_429() : void
+    {
+        Http::fake(['*/connect/token' => Http::response('', 408)]);
+
+        try {
+            $this->myinvois()->getToken();
+            $this->fail('Expected MyinvoisUnavailableException.');
+        } catch (MyinvoisUnavailableException $e) {
+            $this->assertSame(408, $e->getStatus());
+        }
+    }
+
+    #[Test]
+    #[\PHPUnit\Framework\Attributes\DataProvider('oddTokenErrorBodies')]
+    public function a_token_4xx_with_a_non_string_error_field_falls_back_to_the_status(array $body) : void
+    {
+        Http::fake(['*/connect/token' => Http::response($body, 400)]);
+
+        try {
+            $this->myinvois()->getToken();
+            $this->fail('Expected MyinvoisAuthenticationException.');
+        } catch (MyinvoisAuthenticationException $e) {
+            $this->assertStringContainsString('(HTTP 400)', $e->getMessage());
+        }
+    }
+
+    public static function oddTokenErrorBodies() : array
+    {
+        return [
+            'array error' => [['error' => ['a', 'b']]],
+            'object message' => [['message' => ['detail' => 'x']]],
+            'numeric error' => [['error' => 42]],
+        ];
+    }
+
+    #[Test]
     public function a_2xx_token_response_without_an_access_token_throws_instead_of_crashing() : void
     {
         Http::fake(['*/connect/token' => Http::response('<html>captive portal</html>', 200)]);
@@ -480,6 +516,28 @@ class MyinvoisFailureTest extends TestCase
         $this->fakeApi(['*/documents/state/*' => Http::response('Not Found', 404)]);
 
         $this->assertNull($this->myinvois()->cancelDocument('UID'));
+    }
+
+    #[Test]
+    public function a_2xx_cancel_with_an_empty_body_does_not_write_to_local_records() : void
+    {
+        $doc = MyinvoisDocument::create(['document_uuid' => null, 'status' => 'valid']);
+        $this->fakeApi(['*/documents/state/*' => Http::response('', 200)]);
+
+        $this->myinvois()->cancelDocument('UID', 'Wrong amount');
+
+        $this->assertSame('valid', $doc->fresh()->status->value);
+    }
+
+    #[Test]
+    public function a_2xx_get_document_details_with_a_non_json_body_does_not_write_to_local_records() : void
+    {
+        $doc = MyinvoisDocument::create(['document_uuid' => null, 'status' => 'submitted']);
+        $this->fakeApi(['*/documents/*/details' => Http::response('OK', 200)]);
+
+        $this->myinvois()->getDocumentDetails('UID');
+
+        $this->assertSame('submitted', $doc->fresh()->status->value);
     }
 
     #[Test]

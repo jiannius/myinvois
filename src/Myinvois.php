@@ -212,7 +212,8 @@ class Myinvois
             throw MyinvoisUnavailableException::fromConnectionException($e, 'Could not reach MyInvois to authenticate. Please try again later.', $url);
         }
 
-        if ($response->clientError() && $response->status() !== 429) {
+        // 408 (request timeout) and 429 (throttled) are transient, like a 5xx -- not a credentials problem
+        if ($response->clientError() && !in_array($response->status(), [408, 429])) {
             throw MyinvoisAuthenticationException::fromResponse($response, $url, $this->getTokenErrorMessage($response));
         }
 
@@ -220,7 +221,9 @@ class Myinvois
             throw MyinvoisUnavailableException::fromResponse($response, $url);
         }
 
-        if (!is_array($response->json()) || !data_get($response->json(), 'access_token')) {
+        $json = $response->json();
+
+        if (!is_array($json) || !data_get($json, 'access_token')) {
             throw MyinvoisUnavailableException::fromResponse(
                 $response,
                 $url,
@@ -229,7 +232,7 @@ class Myinvois
         }
 
         cache()->put($cachekey, [
-            ...$response->json(),
+            ...$json,
             'expired_at' => now()->addMinutes(50),
         ]);
 
@@ -243,7 +246,11 @@ class Myinvois
      */
     protected function getTokenErrorMessage($response) : string
     {
-        $code = data_get($response->json(), 'error') ?? data_get($response->json(), 'message');
+        $json = $response->json();
+        $code = data_get($json, 'error') ?? data_get($json, 'message');
+
+        // only a plain string is safe to show -- the body is not ours to trust
+        if (!is_string($code) || $code === '') $code = null;
 
         return match ($code) {
             'invalid_client' => 'MyInvois rejected the API credentials. Check that the MyInvois Client ID and Client Secret are correct and match the selected environment (production vs sandbox).',
@@ -434,10 +441,12 @@ class Myinvois
             perMinute: 60,
         );
 
-        // never write a failed (4xx) response back onto the local record
-        if ($api->successful()) $this->updateMyinvoisDocuments($api->json());
+        $json = $api->json();
 
-        return $api->json();
+        // never write a failed (4xx) or empty / non-JSON response back onto the local record
+        if ($api->successful() && is_array($json)) $this->updateMyinvoisDocuments($json);
+
+        return $json;
     }
 
     /**
@@ -514,10 +523,12 @@ class Myinvois
             perMinute: 12,
         );
 
-        // never write a failed (4xx) response back onto the local record
-        if ($api->successful()) $this->updateMyinvoisDocuments([...(array) $api->json(), 'reason' => $reason]);
+        $json = $api->json();
 
-        return $api->json();
+        // never write a failed (4xx) or empty / non-JSON response back onto the local record
+        if ($api->successful() && is_array($json)) $this->updateMyinvoisDocuments([...$json, 'reason' => $reason]);
+
+        return $json;
     }
 
     /**
