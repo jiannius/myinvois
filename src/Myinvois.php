@@ -2,9 +2,15 @@
 
 namespace Jiannius\Myinvois;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
+use Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException;
+use Jiannius\Myinvois\Exceptions\MyinvoisException;
+use Jiannius\Myinvois\Exceptions\MyinvoisPermissionException;
+use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
 use Jiannius\Myinvois\Helpers\Sample;
 use Jiannius\Myinvois\Helpers\Signature;
 use Jiannius\Myinvois\Helpers\UBL;
@@ -154,6 +160,18 @@ class Myinvois
     }
 
     /**
+     * Get the cache key the access token is stored under
+     */
+    protected function getTokenCacheKey() : string
+    {
+        return collect([
+            'myinvois',
+            $this->getSettings('client_id'),
+            $this->getSettings('on_behalf_of'),
+        ])->filter()->join('_');
+    }
+
+    /**
      * Get the token
      */
     public function getToken()
@@ -166,7 +184,7 @@ class Myinvois
             ? 'Missing MyInvois sandbox (preprod) Client ID / Client Secret'
             : 'Missing MyInvois Client ID / Client Secret');
 
-        $cachekey = collect(['myinvois', $clientId, $onBehalfOf])->filter()->join('_');
+        $cachekey = $this->getTokenCacheKey();
         $cache = cache($cachekey);
         $token = data_get($cache, 'access_token');
         $expiry = data_get($cache, 'expired_at');
@@ -187,14 +205,34 @@ class Myinvois
         $http = Http::asForm();
         if ($onBehalfOf) $http->withHeaders(['onbehalfof' => $onBehalfOf]);
 
-        $response = $http->post(url: $url, data: $data);
+        try {
+            $response = $http->post(url: $url, data: $data);
+        }
+        catch (ConnectionException $e) {
+            throw MyinvoisUnavailableException::fromConnectionException($e, 'Could not reach MyInvois to authenticate. Please try again later.', $url);
+        }
 
-        if ($response->clientError()) abort($response->status(), $this->getTokenErrorMessage($response));
+        // 408 (request timeout) and 429 (throttled) are transient, like a 5xx -- not a credentials problem
+        if ($response->clientError() && !in_array($response->status(), [408, 429])) {
+            throw MyinvoisAuthenticationException::fromResponse($response, $url, $this->getTokenErrorMessage($response));
+        }
 
-        $response->throw();
+        if ($response->failed()) {
+            throw MyinvoisUnavailableException::fromResponse($response, $url);
+        }
+
+        $json = $response->json();
+
+        if (!is_array($json) || !data_get($json, 'access_token')) {
+            throw MyinvoisUnavailableException::fromResponse(
+                $response,
+                $url,
+                "MyInvois returned an unexpected response while authenticating (HTTP {$response->status()}). Please try again later.",
+            );
+        }
 
         cache()->put($cachekey, [
-            ...$response->json(),
+            ...$json,
             'expired_at' => now()->addMinutes(50),
         ]);
 
@@ -208,7 +246,11 @@ class Myinvois
      */
     protected function getTokenErrorMessage($response) : string
     {
-        $code = data_get($response->json(), 'error') ?? data_get($response->json(), 'message');
+        $json = $response->json();
+        $code = data_get($json, 'error') ?? data_get($json, 'message');
+
+        // only a plain string is safe to show -- the body is not ours to trust
+        if (!is_string($code) || $code === '') $code = null;
 
         return match ($code) {
             'invalid_client' => 'MyInvois rejected the API credentials. Check that the MyInvois Client ID and Client Secret are correct and match the selected environment (production vs sandbox).',
@@ -224,7 +266,7 @@ class Myinvois
         $method = strtolower($method);
         $token = $this->getToken();
 
-        if (!$token) abort(500, 'Missing MyInvois API access token');
+        if (!$token) throw new MyinvoisAuthenticationException('Missing MyInvois API access token');
 
         if ($perMinute) {
             $timeout = 60 / $perMinute;
@@ -241,14 +283,67 @@ class Myinvois
         }
 
         $endpoint = $this->getEndpoint($uri);
-        $result = Http::withToken($token)->$method($endpoint, $data);
+
+        $result = $this->sendRequest($method, $endpoint, $data, $token);
+
+        // a 401 means the token we hold is no longer good (revoked, rotated secret, or
+        // expired earlier than our 50 minute cache). Drop it and retry exactly once with
+        // a fresh one -- no loop: a second 401 falls through to throwIfUnrecoverable().
+        if ($result->status() === 401) {
+            cache()->forget($this->getTokenCacheKey());
+            $result = $this->sendRequest($method, $endpoint, $data, $this->getToken());
+        }
 
         if ($result->failed()) {
-            throw_if($result->status() === 403, 'Permissions denied from MyInvois Portal');
+            if ($result->status() === 403) {
+                throw MyinvoisPermissionException::fromResponse($result, $endpoint, 'Permissions denied from MyInvois Portal');
+            }
+
             if ($callback = $this->failedCallback) $result = $callback($result);
+
+            $this->throwIfUnrecoverable($result, $endpoint);
         }
 
         return $result;
+    }
+
+    /**
+     * Send one authenticated request, turning a network failure into a typed exception.
+     * The original ConnectionException is deliberately not chained: it carries the
+     * Guzzle request (Authorization header, form body) and the full URL with its query.
+     */
+    protected function sendRequest(string $method, string $endpoint, $data, string $token) : Response
+    {
+        try {
+            return Http::withToken($token)->$method($endpoint, $data);
+        }
+        catch (ConnectionException $e) {
+            throw MyinvoisUnavailableException::fromConnectionException($e, 'Could not reach MyInvois. Please try again later.', $endpoint);
+        }
+    }
+
+    /**
+     * Turn a failed response the failed callback did not recover into a typed
+     * exception, so a failure is never reported as success.
+     *
+     * Only auth (401), throttling (429) and server (5xx) failures throw. Any
+     * other 4xx (400/404/422...) is an application-level answer from LHDN --
+     * e.g. a validation rejection with a JSON body -- and is still returned to
+     * the caller as before.
+     */
+    protected function throwIfUnrecoverable($result, string $endpoint) : void
+    {
+        if (!$result instanceof Response || !$result->failed()) return;
+
+        $status = $result->status();
+
+        if ($status === 401) {
+            throw MyinvoisAuthenticationException::fromResponse($result, $endpoint, 'MyInvois rejected the access token again after refreshing it (HTTP 401). Check the Client ID / Client Secret and that they match the selected environment (production vs sandbox).');
+        }
+
+        if ($status === 429 || $status >= 500) {
+            throw MyinvoisUnavailableException::fromResponse($result, $endpoint);
+        }
     }
 
     /**
@@ -346,9 +441,12 @@ class Myinvois
             perMinute: 60,
         );
 
-        $this->updateMyinvoisDocuments($api->json());
+        $json = $api->json();
 
-        return $api->json();
+        // never write a failed (4xx) or empty / non-JSON response back onto the local record
+        if ($api->successful() && is_array($json)) $this->updateMyinvoisDocuments($json);
+
+        return $json;
     }
 
     /**
@@ -425,9 +523,12 @@ class Myinvois
             perMinute: 12,
         );
 
-        $this->updateMyinvoisDocuments([...$api->json(), 'reason' => $reason]);
+        $json = $api->json();
 
-        return $api->json();
+        // never write a failed (4xx) or empty / non-JSON response back onto the local record
+        if ($api->successful() && is_array($json)) $this->updateMyinvoisDocuments([...$json, 'reason' => $reason]);
+
+        return $json;
     }
 
     /**
@@ -493,7 +594,18 @@ class Myinvois
         $max = 3;
         while ($try <= $max) {
             sleep(2);
-            $this->getSubmission($submissionUid);
+
+            // the documents are already accepted and saved locally at this point, so a
+            // failed poll must never throw -- the caller would lose the submission uid
+            // and may resubmit an accepted invoice. Leave the rows `submitted`; a later
+            // getSubmission() call flips them.
+            try {
+                $this->getSubmission($submissionUid);
+            }
+            catch (MyinvoisException) {
+                break;
+            }
+
             if ($model::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
             else $try = $max + 1;
         }

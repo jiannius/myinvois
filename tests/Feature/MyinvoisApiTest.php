@@ -147,15 +147,15 @@ class MyinvoisApiTest extends TestCase
     }
 
     #[Test]
-    public function an_invalid_client_token_error_aborts_with_a_friendly_message() : void
+    public function an_invalid_client_token_error_throws_with_a_friendly_message() : void
     {
         Http::fake(['*/connect/token' => Http::response(['error' => 'invalid_client'], 400)]);
 
         try {
             $this->myinvois()->getToken();
-            $this->fail('Expected an HttpException.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
-            $this->assertSame(400, $e->getStatusCode());
+            $this->fail('Expected a MyinvoisAuthenticationException.');
+        } catch (\Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException $e) {
+            $this->assertSame(400, $e->getStatus());
             $this->assertStringContainsString('MyInvois rejected the API credentials', $e->getMessage());
         }
     }
@@ -167,8 +167,8 @@ class MyinvoisApiTest extends TestCase
 
         try {
             $this->myinvois()->getToken();
-            $this->fail('Expected an HttpException.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            $this->fail('Expected a MyinvoisAuthenticationException.');
+        } catch (\Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException $e) {
             $this->assertStringContainsString('MyInvois authentication failed (invalid_request)', $e->getMessage());
         }
     }
