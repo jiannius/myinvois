@@ -4,7 +4,7 @@
 
 ### Setup
 
-Settings cascade: explicit `set*()` → `config('services.myinvois.*')` → preprod auto-enabled outside the `production` environment. The OAuth token is cached per `clientId + onBehalfOf` for 50 minutes, and `callApi()` already honors LHDN's per-endpoint rate limits — don't add your own throttling. Every HTTP call (token and API) has a connect timeout (default 10s) and total timeout (default 60s); override with `setConnectTimeout($seconds)` / `setTimeout($seconds)` or `config('services.myinvois.connect_timeout')` / `config('services.myinvois.timeout')`. A timeout throws `MyinvoisUnavailableException`.
+Settings cascade: explicit `set*()` → `config('services.myinvois.*')` → preprod auto-enabled outside the `production` environment. The OAuth token is cached per `clientId + onBehalfOf` for 50 minutes, and `callApi()` already honors LHDN's per-endpoint rate limits — don't add your own throttling. Every HTTP call (token and API) has a connect timeout (default 10s) and total timeout (default 60s); override with `setConnectTimeout($seconds)` / `setTimeout($seconds)` or `config('services.myinvois.connect_timeout')` / `config('services.myinvois.timeout')`. Invalid values (zero, negative, non-numeric) from the setter or config are ignored. A timeout throws `MyinvoisUnavailableException`. The status poll inside `submitDocuments()` uses a shorter 15s total timeout (or the configured one if lower); a direct `getSubmission()` call is unaffected.
 
 @verbatim
 <code-snippet name="Configure the singleton" lang="php">
@@ -122,7 +122,7 @@ $shareUrl = $doc->validation_link; // public LHDN URL once the doc is VALID
 </code-snippet>
 @endverbatim
 
-Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when **you are the buyer** rejecting a doc someone else issued to you. `rejectDocument()` sends a `PUT` and returns LHDN's JSON; unlike `cancelDocument()` it does not write local `myinvois_documents` state.
+Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when **you are the buyer** rejecting a doc someone else issued to you. `rejectDocument()` sends a `PUT` and returns LHDN's JSON; unlike `cancelDocument()` it does not write local `myinvois_documents` state. LHDN requires a reason for both: `rejectDocument()` throws `\InvalidArgumentException` before any network call when the reason is blank, and `cancelDocument()` should always be given one too.
 
 ### Handling API failures
 
