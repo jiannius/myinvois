@@ -49,6 +49,12 @@ Add a `myinvois` section to `config/services.php`:
     // Your own company TIN. When setOnBehalfOf() is called with this TIN,
     // the SDK clears the on-behalf-of header (since you ARE this taxpayer).
     'client_tin' => env('MYINVOIS_CLIENT_TIN'),
+
+    // Optional HTTP timeouts in seconds (token request and every API call).
+    // Defaults: connect_timeout 10, timeout 60. Zero, negative and non-numeric
+    // values are ignored (the default is used instead).
+    'connect_timeout' => env('MYINVOIS_CONNECT_TIMEOUT', 10),
+    'timeout' => env('MYINVOIS_TIMEOUT', 60),
 ],
 ```
 
@@ -90,6 +96,8 @@ $response = app('myinvois')
 | `setOnBehalfOf($tin, $brn = null)` | For intermediaries — submit as if logged in as another taxpayer. `$brn` is only used when `$tin` matches the IG-prefix intermediary format. |
 | `setPrivateKey($pem)` | PEM-encoded RSA private key (only needed for `submitDocuments`) |
 | `setCertificate($pem)` | PEM-encoded X.509 certificate (only needed for `submitDocuments`) |
+| `setConnectTimeout($seconds)` | Seconds to wait to establish the connection (default 10). Overrides `services.myinvois.connect_timeout`. An invalid value (zero, negative, non-numeric) is ignored. |
+| `setTimeout($seconds)` | Seconds to wait for the whole request, token request included (default 60). Overrides `services.myinvois.timeout`. An invalid value (zero, negative, non-numeric) is ignored. |
 | `setFailedCallback(fn)` | Closure invoked when an API call returns a non-2xx response. Receives the `Illuminate\Http\Client\Response`; whatever it returns replaces the original response. |
 
 ## Submitting documents
@@ -152,6 +160,10 @@ On a 401 from an API call the cached access token is discarded and the call is r
 Any other 4xx (400, 404, 422…) is an ordinary LHDN answer and is **returned**, not thrown: for example a validation rejection from `submitDocuments()` comes back as the JSON body, and `validateTaxpayerTIN()` returns `false` on a 404. `cancelDocument()` / `getDocumentDetails()` do not write a non-2xx response onto the local `myinvois_documents` row.
 
 `failedCallback` runs once per call, on the final response (after the 401 retry, if any), for every non-403 failure; if it returns a successful response that response is used and nothing is thrown. If the response is still a 401 / 429 / 5xx afterwards, the exception is thrown. It is not used for the token request.
+
+Every call to MyInvois (the token request and each API call) has a connect timeout and a total timeout, so a hung connection fails instead of blocking your request or queue worker. Laravel's own HTTP client defaults were already 10s connect / 30s total; the SDK now sets them explicitly to 10s / 60s and makes them configurable via `setConnectTimeout()` / `setTimeout()` or `services.myinvois.connect_timeout` / `services.myinvois.timeout` (the setter wins over config, config over the default). Invalid values, from either the setter or config (zero, negative, non-numeric), are ignored and the next source in that order is used, because 0 would mean "wait forever". A timeout throws `MyinvoisUnavailableException`. The 60s total is generous on purpose so a slow but valid `submitDocuments()` of a large batch is not cut off; raise it if your batches are bigger.
+
+The status poll that `submitDocuments()` runs after LHDN accepts a submission uses a shorter total timeout of 15s (or your configured timeout, if that is lower), so the worst case for `submitDocuments()` stays reasonable. A direct `getSubmission()` call is not affected and uses the normal timeout.
 
 **After an `Unavailable` error from `submitDocuments()` the submission may already have reached LHDN** (a timeout can happen after LHDN accepted the request). Check with `getSubmission()` or `getRecentDocuments()` before resubmitting. Once LHDN has accepted a submission, the follow-up status polling never throws: if it fails, the local rows stay `submitted` and `submitDocuments()` returns normally; call `getSubmission()` later to refresh them.
 
@@ -331,7 +343,11 @@ app('myinvois')->cancelDocument($uid, reason: 'Wrong amount');
 app('myinvois')->rejectDocument($uid, reason: 'Goods not received');
 ```
 
+LHDN requires a reason for both actions. `rejectDocument` throws `\InvalidArgumentException` (before any network call) if `$reason` is blank. `cancelDocument` still accepts a null reason, but LHDN requires one for cancellation too, so always pass it.
+
 `cancelDocument` updates the local row's status to `cancelled` and stores the reason in `response`. The 72-hour window is enforced client-side via `MyinvoisDocument::isCancellable()`.
+
+`rejectDocument` sends a `PUT` (like `cancelDocument`) and returns LHDN's JSON response. It does not touch the local `myinvois_documents` table: a rejected document is one issued to you, so there may be no local row (or only an inbound one), and the supplier still has to act on the rejection.
 
 ## Taxpayer TIN lookup
 
