@@ -532,12 +532,17 @@ class Myinvois
     }
 
     /**
-     * Reject the document
+     * Reject the document (buyer side, on a received document).
+     *
+     * Deliberately does not write local state: the local row may not exist or may be an
+     * inbound document, LHDN answers with a "requested" state the supplier still has to
+     * act on, and `rejected` is not a `Status` case.
      */
     public function rejectDocument($uid, $reason = null)
     {
         $api = $this->callApi(
             uri: 'documents/state/'.$uid.'/state',
+            method: 'PUT',
             data: [
                 'status' => 'rejected',
                 'reason' => $reason,

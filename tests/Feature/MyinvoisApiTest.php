@@ -267,13 +267,31 @@ class MyinvoisApiTest extends TestCase
     }
 
     #[Test]
-    public function reject_document_posts_a_rejection() : void
+    public function reject_document_sends_a_put_with_a_json_body() : void
     {
         $this->fakeApi(['*documents/state/UID1/state*' => Http::response(['status' => 'requested'])]);
 
         $result = $this->myinvois()->rejectDocument('UID1', 'Not mine');
 
         $this->assertSame(['status' => 'requested'], $result);
+        Http::assertSent(fn ($r) => $r->method() === 'PUT'
+            && str_ends_with($r->url(), '/api/v1.0/documents/state/UID1/state')
+            && $r->data() === ['status' => 'rejected', 'reason' => 'Not mine']
+            && $r->isJson());
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), 'documents/state'));
+    }
+
+    #[Test]
+    public function reject_document_leaves_local_documents_untouched() : void
+    {
+        // the buyer rejects a document issued to them; LHDN answers "requested" and the
+        // supplier still has to act, so no local row (outbound or inbound) is rewritten
+        $doc = MyinvoisDocument::create(['document_uuid' => 'UID1', 'status' => 'valid']);
+        $this->fakeApi(['*documents/state/UID1/state*' => Http::response(['uuid' => 'UID1', 'status' => 'Rejected'])]);
+
+        $this->myinvois()->rejectDocument('UID1', 'Not mine');
+
+        $this->assertSame('valid', $doc->fresh()->status->value);
     }
 
     #[Test]
