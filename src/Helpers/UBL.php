@@ -350,7 +350,7 @@ class UBL
 
         $subtotal = data_get($data, 'subtotal');
         $grandTotal = data_get($data, 'grand_total');
-        $payableTotal = data_get($data, 'payable_total') ?: $grandTotal;
+        $payableTotal = data_get($data, 'payable_total') ?? $grandTotal;
 
         data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.TaxExclusiveAmount.0._', $subtotal);
         data_set($schema, 'Invoice.0.LegalMonetaryTotal.0.TaxExclusiveAmount.0.currencyID', $currency);

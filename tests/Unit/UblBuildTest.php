@@ -174,6 +174,21 @@ class UblBuildTest extends TestCase
     }
 
     #[Test]
+    public function it_keeps_a_zero_payable_total_instead_of_falling_back_to_grand_total() : void
+    {
+        // 0.02 rounds down to 0.00 under 5-sen cash rounding
+        $ubl = UBL::build(DocumentFixture::invoice([
+            'grand_total' => 0.02,
+            'payable_rounding' => -0.02,
+            'payable_total' => 0.0,
+        ]));
+
+        $this->assertSame(0.02, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.TaxInclusiveAmount.0._'));
+        $this->assertSame(-0.02, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableRoundingAmount.0._'));
+        $this->assertSame(0.0, data_get($ubl, 'Invoice.0.LegalMonetaryTotal.0.PayableAmount.0._'));
+    }
+
+    #[Test]
     public function it_writes_a_positive_payable_rounding_amount() : void
     {
         $ubl = UBL::build(DocumentFixture::invoice(['payable_rounding' => 0.02, 'payable_total' => 530.02]));
