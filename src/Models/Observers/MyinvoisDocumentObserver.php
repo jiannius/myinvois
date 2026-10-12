@@ -2,14 +2,67 @@
 
 namespace Jiannius\Myinvois\Models\Observers;
 
+use Jiannius\Myinvois\Enums\Status;
+use Jiannius\Myinvois\Events\DocumentStatusChanged;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 
 class MyinvoisDocumentObserver
 {
     /**
+     * Status changes noted by created() / updated(), announced once saved() has written
+     * the parent. Keyed by the model instance. Static because Laravel builds a new observer
+     * object for every event it dispatches.
+     *
+     * @var \WeakMap<object, array{0: ?Status, 1: ?Status}>|null
+     */
+    protected static ?\WeakMap $changes = null;
+
+    /**
+     * The model created event: a new row with a status is a change from nothing.
+     */
+    public function created($document)
+    {
+        if ($document->status) $this->changes()[$document] = [null, $document->status];
+    }
+
+    /**
+     * The model updated event (only fired when something was actually written).
+     */
+    public function updated($document)
+    {
+        if (! $document->wasChanged('status')) return;
+
+        $previous = data_get($document->getPrevious(), 'status');
+
+        $this->changes()[$document] = [
+            $previous instanceof Status ? $previous : Status::tryFrom((string) $previous),
+            $document->status,
+        ];
+    }
+
+    /**
      * The model saved event
      */
     public function saved($document)
+    {
+        $change = $this->changes()[$document] ?? null;
+        unset($this->changes()[$document]);
+
+        $this->syncParent($document);
+
+        // DocumentStatusChanged, from any code path, after the parent status is in place
+        if ($change) event(new DocumentStatusChanged($document, ...$change));
+    }
+
+    protected function changes() : \WeakMap
+    {
+        return static::$changes ??= new \WeakMap;
+    }
+
+    /**
+     * Write the row's status to its parent.
+     */
+    protected function syncParent($document) : void
     {
         $document = $document->fresh();
         $parent = $document->parent;

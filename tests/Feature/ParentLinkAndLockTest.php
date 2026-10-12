@@ -346,16 +346,18 @@ class ParentLinkAndLockTest extends TestCase
     }
 
     #[Test]
-    public function a_lock_the_caller_owns_is_checked_but_never_released_here() : void
+    public function a_lock_the_caller_owns_is_used_and_released_the_same_way() : void
     {
         $this->accept([['uuid' => 'UID1', 'invoiceCodeNumber' => 'INV-0001']]);
         $order = Order::create();
         $owner = SubmissionLock::acquire([$order], false);
 
+        $this->assertFalse($this->lockIsFree($order));
+
         $this->myinvois()->forParents(['INV-0001' => $order], $owner)->withoutPolling()->submitDocuments([DocumentFixture::invoice()]);
 
         $this->assertSame(1, MyinvoisDocument::count());
-        $this->assertFalse($this->lockIsFree($order));
+        $this->assertTrue($this->lockIsFree($order));
     }
 
     #[Test]

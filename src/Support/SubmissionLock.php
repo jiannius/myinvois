@@ -34,9 +34,11 @@ class SubmissionLock
     /**
      * The cache lock key for a parent in an environment.
      */
-    public static function key(Model $parent, bool $preprod) : string
+    public static function key(Model|array $parent, bool $preprod) : string
     {
-        return 'myinvois:submit:'.($preprod ? 'preprod' : 'prod').':'.$parent->getMorphClass().':'.$parent->getKey();
+        $reference = $parent instanceof Model ? ParentReference::make($parent) : $parent;
+
+        return 'myinvois:submit:'.($preprod ? 'preprod' : 'prod').':'.$reference['type'].':'.$reference['id'];
     }
 
     /**
@@ -87,7 +89,7 @@ class SubmissionLock
     /**
      * Free the locks held by the owner. Locks held by anyone else are left alone.
      *
-     * @param  iterable<Model>  $parents
+     * @param  iterable<Model|array{type: string, id: mixed}>  $parents  models or references
      */
     public static function release(iterable $parents, bool $preprod, string $owner) : void
     {
@@ -129,19 +131,9 @@ class SubmissionLock
         }
     }
 
-    /**
-     * A parent as morph class + key, safe to put in a queue payload or an event.
-     *
-     * @return array{type: string, id: mixed}
-     */
-    public static function reference(Model $parent) : array
-    {
-        return ['type' => $parent->getMorphClass(), 'id' => $parent->getKey()];
-    }
-
     protected static function inFlight(string $message, Model $parent) : MyinvoisInFlightException
     {
-        return new MyinvoisInFlightException($message, [static::reference($parent)]);
+        return new MyinvoisInFlightException($message, [ParentReference::make($parent)]);
     }
 
     protected static function store() : Repository
@@ -161,8 +153,8 @@ class SubmissionLock
      * Parents keyed by their lock key, de-duplicated and in a stable order (so two
      * submitters always take locks in the same order).
      *
-     * @param  iterable<Model>  $parents
-     * @return array<string, Model>
+     * @param  iterable<Model|array{type: string, id: mixed}>  $parents
+     * @return array<string, Model|array{type: string, id: mixed}>
      */
     protected static function unique(iterable $parents, bool $preprod) : array
     {

@@ -3,7 +3,9 @@
 namespace Jiannius\Myinvois\Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Jiannius\Myinvois\Enums\Status;
+use Jiannius\Myinvois\Events\DocumentStatusChanged;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Tests\Fixtures\Order;
 use Jiannius\Myinvois\Tests\TestCase;
@@ -142,6 +144,52 @@ class MyinvoisDocumentObserverTest extends TestCase
 
         $this->assertSame(Status::VALID, $a->fresh()->myinvois_status);
         $this->assertSame(Status::INVALID, $b->fresh()->myinvois_status);
+    }
+
+    #[Test]
+    public function a_status_change_fires_document_status_changed_from_any_path() : void
+    {
+        Event::fake([DocumentStatusChanged::class]);
+        $order = Order::create();
+
+        $doc = $this->child($order, ['status' => 'submitted', 'is_preprod' => false]);
+
+        Event::assertDispatched(DocumentStatusChanged::class, fn ($e) => $e->document->is($doc)
+            && $e->from === null && $e->to === Status::SUBMITTED);
+
+        $doc->update(['status' => 'valid']);
+
+        Event::assertDispatched(DocumentStatusChanged::class, fn ($e) => $e->from === Status::SUBMITTED && $e->to === Status::VALID);
+
+        // a row with no parent still announces
+        MyinvoisDocument::create(['status' => 'invalid']);
+        Event::assertDispatchedTimes(DocumentStatusChanged::class, 3);
+    }
+
+    #[Test]
+    public function a_save_that_leaves_the_status_alone_fires_nothing() : void
+    {
+        Event::fake([DocumentStatusChanged::class]);
+        $doc = $this->child(Order::create(), ['status' => 'valid', 'is_preprod' => false]);
+
+        $doc->update(['status' => 'valid', 'document_number' => 'INV-X']);
+        $doc->update(['response' => ['a' => 1]]);
+
+        Event::assertDispatchedTimes(DocumentStatusChanged::class, 1);
+    }
+
+    #[Test]
+    public function a_superseded_row_still_announces_its_own_change_without_moving_the_parent() : void
+    {
+        Event::fake([DocumentStatusChanged::class]);
+        $order = Order::create();
+        $old = $this->child($order, ['status' => 'submitted', 'is_preprod' => false]);
+        $this->child($order, ['status' => 'valid', 'is_preprod' => false]);
+
+        $old->update(['status' => 'invalid']);
+
+        Event::assertDispatched(DocumentStatusChanged::class, fn ($e) => $e->document->is($old) && $e->to === Status::INVALID);
+        $this->assertSame(Status::VALID, $order->fresh()->myinvois_status);
     }
 
     #[Test]
