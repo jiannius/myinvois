@@ -2,6 +2,7 @@
 
 namespace Jiannius\Myinvois\Tests\Feature;
 
+use Illuminate\Support\Facades\DB;
 use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Tests\Fixtures\Order;
@@ -141,5 +142,21 @@ class MyinvoisDocumentObserverTest extends TestCase
 
         $this->assertSame(Status::VALID, $a->fresh()->myinvois_status);
         $this->assertSame(Status::INVALID, $b->fresh()->myinvois_status);
+    }
+
+    #[Test]
+    public function writing_the_parent_status_does_not_bump_its_updated_at() : void
+    {
+        $order = Order::create();
+        $past = now()->subDays(3)->startOfSecond();
+
+        DB::table('orders')->where('id', $order->id)->update(['updated_at' => $past]);
+
+        $this->child($order, ['status' => 'valid', 'is_preprod' => false]);
+
+        $fresh = $order->fresh();
+
+        $this->assertSame(Status::VALID, $fresh->myinvois_status);
+        $this->assertTrue($past->equalTo($fresh->updated_at), 'the parent updated_at must not move');
     }
 }

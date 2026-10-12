@@ -325,6 +325,29 @@ class Myinvois
     }
 
     /**
+     * URI segments that name an endpoint, as opposed to an id (submission uid, document
+     * uuid, TIN) embedded in the path. Anything else becomes a placeholder in the throttle
+     * key, so the limiter is shared by every id of the same endpoint.
+     */
+    protected const THROTTLE_LITERALS = [
+        'taxpayer', 'search', 'tin', 'validate', 'documents', 'recent', 'raw', 'details',
+        'state', 'documentsubmissions',
+    ];
+
+    /**
+     * Get the rate limiter key for an API uri: one per endpoint (ids stripped) and per
+     * client id -- LHDN rate limits apply per client id, whatever the uid being asked for.
+     */
+    public function getThrottleKey($uri) : string
+    {
+        $endpoint = collect(explode('/', trim((string) $uri, '/')))
+            ->map(fn ($segment) => in_array($segment, static::THROTTLE_LITERALS, true) ? $segment : 'id')
+            ->join('-');
+
+        return 'myinvois.'.$this->getSettings('client_id').'.'.$endpoint;
+    }
+
+    /**
      * Call the API
      */
     public function callApi($uri, $method = 'GET', $data = [], $perMinute = null)
@@ -336,7 +359,7 @@ class Myinvois
 
         if ($perMinute) {
             $timeout = 60 / $perMinute;
-            $throttleKey = 'myinvois.'.str($uri)->replace('/', '-')->slug()->toString();
+            $throttleKey = $this->getThrottleKey($uri);
             $tooManyAttempts = RateLimiter::tooManyAttempts($throttleKey, $perMinute);
 
             if ($tooManyAttempts) {
@@ -365,7 +388,13 @@ class Myinvois
                 throw MyinvoisPermissionException::fromResponse($result, $endpoint, 'Permissions denied from MyInvois Portal');
             }
 
-            if ($callback = $this->failedCallback) $result = $callback($result);
+            // a callback that returns nothing (or anything that is not a response) did not
+            // recover the call -- keep the original failed response rather than lose it
+            if ($callback = $this->failedCallback) {
+                $replacement = $callback($result);
+
+                if ($replacement instanceof Response) $result = $replacement;
+            }
 
             $this->throwIfUnrecoverable($result, $endpoint);
         }

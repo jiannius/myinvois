@@ -83,7 +83,8 @@ class MyinvoisDocumentObserver
     {
         $column = $document->is_preprod ? 'myinvois_preprod_status' : 'myinvois_status';
 
-        $parent->newQueryWithoutScopes()->whereKey($parent->getKey())->update([$column => $status]);
+        // toBase(): the Eloquent builder's update() would add updated_at to the statement
+        $parent->newQueryWithoutScopes()->whereKey($parent->getKey())->toBase()->update([$column => $status]);
 
         // Keep the in-memory instance consistent without marking it dirty.
         $parent->setAttribute($column, $status)->syncOriginalAttribute($column);

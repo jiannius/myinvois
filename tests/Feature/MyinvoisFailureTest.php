@@ -610,6 +610,38 @@ class MyinvoisFailureTest extends TestCase
         $this->assertSame(['result' => 'fallback'], $result);
     }
 
+    #[Test]
+    public function a_failed_callback_returning_null_keeps_the_original_failed_response() : void
+    {
+        $this->fakeApi(['*documents/recent*' => Http::response('', 503)]);
+        $seen = null;
+
+        try {
+            $this->myinvois()->setFailedCallback(function ($response) use (&$seen) {
+                $seen = $response->status(); // only logs, returns nothing
+            })->getRecentDocuments();
+            $this->fail('Expected MyinvoisUnavailableException.');
+        } catch (MyinvoisUnavailableException) {
+        }
+
+        $this->assertSame(503, $seen);
+    }
+
+    #[Test]
+    public function a_failed_callback_returning_null_does_not_crash_submit_documents_on_a_rejection() : void
+    {
+        $this->fakeApi(['*documentsubmissions*' => Http::response(['error' => ['code' => 'BadStructure']], 400)]);
+
+        $result = $this->myinvois()
+            ->setPrivateKey(CertFixture::privateKey())
+            ->setCertificate(CertFixture::certificate())
+            ->setFailedCallback(fn ($response) => null)
+            ->submitDocuments([DocumentFixture::invoice()]);
+
+        $this->assertSame(['error' => ['code' => 'BadStructure']], $result);
+        $this->assertSame(0, MyinvoisDocument::count());
+    }
+
     // ---- hierarchy -----------------------------------------------------
 
     #[Test]
