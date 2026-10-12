@@ -49,6 +49,23 @@ class MyinvoisFakeQueueTest extends TestCase
     }
 
     #[Test]
+    public function the_fake_marks_the_post_as_started_before_it_runs_the_before_post_hook() : void
+    {
+        $fake = Myinvois::fake();
+        $order = Order::create();
+        $seen = null;
+
+        $fake->forParents(['INV-0001' => $order])
+            ->beforePost(function () use (&$seen, $fake) {
+                $seen = $fake->postStarted();
+            })
+            ->submitDocuments([DocumentFixture::invoice()]);
+
+        $this->assertTrue($seen, 'like the real client, postStarted is true by the time the hook runs');
+        $this->assertTrue($fake->postStarted());
+    }
+
+    #[Test]
     public function for_parents_stamps_the_rows_and_never_sleeps_or_calls_lhdn() : void
     {
         Http::fake();

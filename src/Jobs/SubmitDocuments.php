@@ -17,6 +17,7 @@ use Jiannius\Myinvois\Exceptions\MyinvoisException;
 use Jiannius\Myinvois\Exceptions\MyinvoisInFlightException;
 use Jiannius\Myinvois\Exceptions\MyinvoisThrottledException;
 use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
+use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
 use Jiannius\Myinvois\Support\ParentReference;
 use Jiannius\Myinvois\Support\SubmissionLock;
@@ -48,11 +49,14 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     public const RETRY_DELAYS = [30, 60, 120];
 
     /**
-     * States of the run marker (see claimRun()).
+     * States of the run marker (see claimRun()). In the cache the claimed state is stored as
+     * `claimed:<run id>` and the accepted state as `accepted:<submission uid>`.
      */
     public const RUN_CLAIMED = 'claimed';
 
     public const RUN_POSTING = 'posting';
+
+    public const RUN_ACCEPTED = 'accepted';
 
     public const RUN_DONE = 'done';
 
@@ -90,6 +94,23 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     public $timeout = 120;
 
     /**
+     * Identifies this run of handle() in the `claimed:<run id>` marker, so a copy that was
+     * overtaken can tell before its POST that it no longer owns the run. Set in handle().
+     */
+    protected ?string $runId = null;
+
+    /**
+     * Whether this run already flipped the marker to `posting` (a 401 retry sends the POST
+     * again through the same hook).
+     */
+    protected bool $postingSet = false;
+
+    /**
+     * Set when this run stood down because another copy owns the marker.
+     */
+    protected bool $superseded = false;
+
+    /**
      * @param  array<int, array>  $documents  the flat document contract
      * @param  array<string, array{type: string, id: mixed}>  $parents  row `document_number` => parent reference
      * @param  array<string, mixed>  $context
@@ -123,7 +144,11 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
 
     public function handle() : void
     {
-        $state = $this->claimRun();
+        $this->runId = bin2hex(random_bytes(8));
+        $this->postingSet = false;
+        $this->superseded = false;
+
+        [$state, $detail] = $this->claimRun();
 
         // A second copy of this job (a queue whose retry_after is shorter than the run, or a
         // worker that died and the job was served again) must not post twice, and must not
@@ -139,8 +164,17 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
-        // `claimed` (this run, or a copy that died before it posted) proceeds: the lock
-        // check and assertSubmittable() inside submitDocuments() still guard it.
+        if ($state === static::RUN_ACCEPTED) {
+            // LHDN accepted and the rows are saved; the worker died before the app was told
+            $this->finishAccepted((string) $detail);
+            $this->setRunState(static::RUN_DONE);
+
+            return;
+        }
+
+        // `claimed`: this run, or a copy that died before it posted (or is only slow). It
+        // proceeds and now owns the marker; a slower copy that proceeded earlier finds the
+        // marker is no longer its own right before its POST and stands down (see postingHook()).
         try {
             $this->submit();
         }
@@ -148,16 +182,17 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             // Escaped on its own (the queue backs off and retries): if nothing was sent the
             // retry must be free to run, so the marker goes. After the POST started it stays
             // `posting`, and the retry reports an ambiguous failure instead of posting again.
-            if ($this->runState() === static::RUN_CLAIMED) $this->forgetRun();
+            $this->forgetRun();
 
             throw $e;
         }
 
         // finished (accepted, failed or ambiguous): a later redelivery is a silent no-op.
-        // Absent marker = the job released itself for a retry, which must run again.
-        if ($this->runState() !== null) {
+        // Absent marker = the job released itself for a retry, which must run again. A marker
+        // that is another copy's claim belongs to that copy: leave it.
+        if (! $this->superseded) {
             try {
-                $this->setRunState(static::RUN_DONE);
+                $this->finishRun();
             }
             catch (Throwable $e) {
                 report($e);
@@ -202,8 +237,15 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             $result = $client
                 ->forParents($models, $this->lockOwner)
                 ->withoutPolling()
-                ->beforePost(fn () => $this->setRunState(static::RUN_POSTING))
+                ->beforePost(fn () => $this->postingHook())
                 ->submitDocuments($this->documents);
+        }
+        catch (RunSupersededException) {
+            // another copy owns the run and has (or will) report: no announcement, and the
+            // lock stays -- it is shared with that copy, whose own run frees it
+            $this->superseded = true;
+
+            return;
         }
         catch (MyinvoisInFlightException $e) {
             $this->announce(SubmissionFailed::IN_FLIGHT, [$e->getMessage()]);
@@ -234,6 +276,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         }
 
         try {
+            $this->markAccepted($result);
             $this->handleResult($result);
         }
         catch (Throwable $e) {
@@ -321,9 +364,19 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
 
         if ($rows->isEmpty()) return;
 
-        $numbers = $rows->pluck('document_number')->filter()->unique()->values()->all();
-        $uid = $rows->first()->submission_uid;
+        $this->announceAccepted(
+            $rows->pluck('document_number')->filter()->unique()->values()->all(),
+            $rows->first()->submission_uid,
+        );
+    }
 
+    /**
+     * Dispatch the poll, then tell the app.
+     *
+     * @param  array<int, string>  $numbers
+     */
+    protected function announceAccepted(array $numbers, ?string $uid) : void
+    {
         // The package's own follow-up comes first and a listener cannot stop it: the poll is
         // dispatched, then the app is told. If the dispatch itself fails the sweep is the net.
         try {
@@ -386,50 +439,193 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
-     * Claim the run and return the state to act on. The marker is keyed on the lock owner
-     * token (unique per queueSubmission() call) and moves claimed -> posting -> done:
+     * Claim the run and return [state, detail] to act on. The marker is keyed on the lock
+     * owner token (unique per queueSubmission() call) and moves
+     * claimed:<run id> -> posting -> accepted:<submission uid> -> done:
      *
-     * - `claimed`: a run is before the POST, or died there. Proceed.
+     * - `claimed`: a run is before the POST, or died there, or is only slow. Proceed, and
+     *   take the marker over with this run's id.
      * - `posting`: the POST was (about to be) sent. Never post again; report ambiguous.
+     * - `accepted`: LHDN accepted and the rows are saved. Finish the announcement.
      * - `done`: a definite outcome was reached. Silent no-op.
      *
-     * Returns `claimed` for a fresh claim as well as for a previous `claimed` one.
+     * Runs under the marker lock, so it cannot interleave with another copy's posting check.
+     *
+     * @return array{0: string, 1: ?string}
      */
-    protected function claimRun() : string
+    protected function claimRun() : array
     {
-        $store = $this->store();
+        return $this->withMarkerLock(function () {
+            $store = $this->store();
+            $claimed = $this->claimedMarker();
 
-        if ($store->add($this->runKey(), static::RUN_CLAIMED, static::CLAIMED_SECONDS)) {
-            return static::RUN_CLAIMED;
+            if ($store->add($this->runKey(), $claimed, static::CLAIMED_SECONDS)) {
+                return [static::RUN_CLAIMED, null];
+            }
+
+            [$state, $detail] = $this->parseMarker($store->get($this->runKey()));
+
+            if (in_array($state, [static::RUN_POSTING, static::RUN_ACCEPTED, static::RUN_DONE], true)) {
+                return [$state, $detail];
+            }
+
+            // another run's `claimed` (a crashed or slower copy), or expired between the add
+            // and the get: run, and own the marker
+            $store->put($this->runKey(), $claimed, static::CLAIMED_SECONDS);
+
+            return [static::RUN_CLAIMED, null];
+        });
+    }
+
+    /**
+     * Runs right before the submission POST leaves, from inside the client. If another copy
+     * took the marker over since this run claimed it, this run stands down: that copy was
+     * served while this one was slow (a token fetch) and may already have posted.
+     *
+     * An absent marker (it expired) is still this run's: a copy that took over would have
+     * written its own.
+     */
+    protected function postingHook() : void
+    {
+        if ($this->postingSet) return;
+
+        $this->withMarkerLock(function () {
+            $raw = $this->store()->get($this->runKey());
+
+            if ($raw !== null && $raw !== $this->claimedMarker()) {
+                throw new RunSupersededException('Another copy of this submission job took over the run.');
+            }
+
+            $this->setRunState(static::RUN_POSTING);
+        });
+
+        $this->postingSet = true;
+    }
+
+    /**
+     * LHDN accepted and the rows are saved: remember it, with the submission uid, so a
+     * redelivery can finish the announcement instead of reporting an ambiguous failure.
+     * Only moves `posting` on; if a copy already settled the marker it stays as it is.
+     *
+     * @param  mixed  $result  what submitDocuments() returned
+     */
+    protected function markAccepted($result) : void
+    {
+        $rows = collect(is_array($result) ? data_get($result, 'myinvois_documents', []) : []);
+
+        if ($rows->isEmpty() || ! ($uid = $rows->first()->submission_uid)) return;
+
+        try {
+            $this->withMarkerLock(function () use ($uid) {
+                if ($this->store()->get($this->runKey()) === static::RUN_POSTING) {
+                    $this->setRunState(static::RUN_ACCEPTED, $uid);
+                }
+            });
+        }
+        catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * A redelivery found `accepted`: dispatch the poll and tell the app, from the rows.
+     */
+    protected function finishAccepted(string $uid) : void
+    {
+        $numbers = ($this->documentModel())::query()
+            ->where('submission_uid', $uid)
+            ->pluck('document_number')
+            ->filter()->unique()->values()->all();
+
+        if (! $numbers) {
+            $this->announceStopped();
+
+            return;
         }
 
-        $state = $store->get($this->runKey());
-
-        if ($state === static::RUN_POSTING || $state === static::RUN_DONE) return $state;
-
-        // `claimed`, or expired between the add and the get: run, and refresh the marker
-        $this->setRunState(static::RUN_CLAIMED);
-
-        return static::RUN_CLAIMED;
+        $this->announceAccepted($numbers, $uid);
     }
 
-    protected function runState() : ?string
+    /**
+     * The end of a run: `done`, unless the marker is gone (the job released itself for a
+     * retry) or settled / owned by someone else.
+     */
+    protected function finishRun() : void
     {
-        return $this->store()->get($this->runKey());
+        $this->withMarkerLock(function () {
+            $raw = $this->store()->get($this->runKey());
+            [$state] = $this->parseMarker($raw);
+
+            if ($raw === $this->claimedMarker() || in_array($state, [static::RUN_POSTING, static::RUN_ACCEPTED], true)) {
+                $this->setRunState(static::RUN_DONE);
+            }
+        });
     }
 
-    protected function setRunState(string $state) : void
+    protected function claimedMarker() : string
+    {
+        return static::RUN_CLAIMED.':'.$this->runId;
+    }
+
+    /**
+     * @return array{0: ?string, 1: ?string} state and its detail (run id / submission uid)
+     */
+    protected function parseMarker(mixed $raw) : array
+    {
+        if (! is_string($raw) || $raw === '') return [null, null];
+
+        [$state, $detail] = array_pad(explode(':', $raw, 2), 2, null);
+
+        return [$state, $detail];
+    }
+
+    protected function setRunState(string $state, ?string $detail = null) : void
     {
         $this->store()->put(
             $this->runKey(),
-            $state,
+            match ($state) {
+                static::RUN_CLAIMED => $this->claimedMarker(),
+                static::RUN_ACCEPTED => static::RUN_ACCEPTED.':'.$detail,
+                default => $state,
+            },
             $state === static::RUN_CLAIMED ? static::CLAIMED_SECONDS : static::SETTLED_SECONDS,
         );
     }
 
-    protected function forgetRun() : void
+    /**
+     * Drop the marker, but only while it is still this run's: its `claimed:<runId>`, and
+     * with $afterPostStarted also the `posting` this very run set (a 429 on the POST: LHDN
+     * definitely did not take it, so the retry must run). After the POST started an
+     * escaping exception keeps `posting`, and another copy's marker is never ours to delete.
+     */
+    protected function forgetRun(bool $afterPostStarted = false) : void
     {
-        $this->store()->forget($this->runKey());
+        try {
+            $this->withMarkerLock(function () use ($afterPostStarted) {
+                $raw = $this->store()->get($this->runKey());
+
+                if ($raw === $this->claimedMarker() || ($afterPostStarted && $this->postingSet && $raw === static::RUN_POSTING)) {
+                    $this->store()->forget($this->runKey());
+                }
+            });
+        }
+        catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * Run $callback holding a short cache lock, so a get-then-put on the marker is atomic
+     * against the other copies of this job.
+     */
+    protected function withMarkerLock(\Closure $callback) : mixed
+    {
+        return $this->store()->lock($this->runKey().':guard', 10)->block(5, $callback);
+    }
+
+    protected function documentModel() : string
+    {
+        return MyinvoisDocument::$useModel;
     }
 
     protected function store() : Repository
@@ -438,12 +634,12 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
-     * Release the job for another attempt (nothing was sent). The run marker is dropped so
-     * the next attempt is not mistaken for a redelivery.
+     * Release the job for another attempt (LHDN did not take the request). This run's marker
+     * is dropped so the next attempt is not mistaken for a redelivery; another copy's is not.
      */
     protected function retryLater(int $seconds) : void
     {
-        $this->forgetRun();
+        $this->forgetRun(afterPostStarted: true);
 
         $this->release($seconds);
     }

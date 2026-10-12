@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Jiannius\Myinvois\Events\SubmissionAccepted;
 use Jiannius\Myinvois\Events\SubmissionFailed;
+use Jiannius\Myinvois\Jobs\PollSubmission;
 use Jiannius\Myinvois\Jobs\SubmitDocuments;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
@@ -126,7 +127,7 @@ class QueueRunMarkerTest extends TestCase
         $job = $this->queued($order);
 
         // worker 1 claimed the run and was killed before it posted
-        $this->setMarker($job, 'claimed');
+        $this->setMarker($job, 'claimed:crashed-run');
 
         $this->redelivered($job)->handle();
 
@@ -234,6 +235,164 @@ class QueueRunMarkerTest extends TestCase
         Event::assertNotDispatched(SubmissionFailed::class);
 
         RetryBoomSubmitDocuments::$boom = true;
+    }
+
+    /**
+     * Copy A is slow before the POST (token fetch); the queue serves a second copy B, which
+     * proceeds. B's whole run happens inside A's token request.
+     */
+    protected function fakeWithTakeover(SubmitDocuments $a, SubmitDocuments $b, ?\Closure $afterTakeover = null) : void
+    {
+        $inside = false;
+
+        Http::fake(function ($request) use (&$inside, $b, $afterTakeover) {
+            if (str_contains($request->url(), 'connect/token')) {
+                if (! $inside) {
+                    $inside = true;
+                    $b->handle();
+                    if ($afterTakeover) $afterTakeover();
+                }
+
+                return Http::response(['access_token' => 'tok', 'expires_in' => 3600]);
+            }
+
+            return Http::response([
+                'submissionUid' => 'SUB1',
+                'acceptedDocuments' => [['uuid' => 'UID1', 'invoiceCodeNumber' => 'INV-0001']],
+            ]);
+        });
+    }
+
+    #[Test]
+    public function a_copy_overtaken_before_its_post_never_posts_a_second_time() : void
+    {
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $order = OrgOrder::create();
+        $a = $this->queued($order);
+        $a->withFakeQueueInteractions();
+        $b = $this->redelivered($a);
+
+        $this->fakeWithTakeover($a, $b);
+
+        $a->handle();
+
+        $this->assertSame(1, $this->posts(), 'only the copy that took over posts');
+        $this->assertSame(1, MyinvoisDocument::count());
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Event::assertDispatchedTimes(SubmissionAccepted::class, 1);
+        $this->assertSame('done', $this->marker($a), 'the overtaken copy leaves the marker alone');
+        $a->assertNotReleased();
+    }
+
+    #[Test]
+    public function a_copy_overtaken_by_a_run_still_before_its_post_posts_nothing_either() : void
+    {
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $order = OrgOrder::create();
+        $a = $this->queued($order);
+        $a->withFakeQueueInteractions();
+
+        // B claims the run (overwriting A's marker) but has not posted yet: A must still stand down
+        Http::fake([
+            '*/connect/token' => function () use ($a) {
+                $this->setMarker($a, 'claimed:someone-else');
+
+                return Http::response(['access_token' => 'tok', 'expires_in' => 3600]);
+            },
+            '*documentsubmissions*' => Http::response(['submissionUid' => 'SUB1']),
+        ]);
+
+        $a->handle();
+
+        $this->assertSame(0, $this->posts());
+        $this->assertSame(0, MyinvoisDocument::count());
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Event::assertNotDispatched(SubmissionAccepted::class);
+        $this->assertSame('claimed:someone-else', $this->marker($a), 'not this copy\'s marker: not deleted, not marked done');
+    }
+
+    #[Test]
+    public function a_retry_or_escape_never_deletes_a_marker_another_run_owns() : void
+    {
+        Event::fake([SubmissionFailed::class]);
+        $a = $this->queued(OrgOrder::create());
+        $a->withFakeQueueInteractions();
+
+        // the token request fails (a retry), and meanwhile another copy took the marker
+        Http::fake(['*/connect/token' => function () use ($a) {
+            $this->setMarker($a, 'claimed:someone-else');
+
+            return Http::response('', 500);
+        }]);
+
+        $a->handle();
+
+        $this->assertSame('claimed:someone-else', $this->marker($a));
+        $this->assertSame(0, $this->posts());
+
+        // and the same on the escape path
+        Cache::forget('myinvois:submit-run:'.$a->lockOwner);
+        $boom = new RetryBoomSubmitDocuments($a->documents, $a->parents, $a->preprod, $a->lockOwner, $a->context);
+        $boom->withFakeQueueInteractions();
+        RetryBoomSubmitDocuments::$boom = true;
+
+        try {
+            $boom->handle();
+            $this->fail('the exception should escape handle()');
+        }
+        catch (\RuntimeException) {
+        }
+
+        $this->assertSame('claimed:someone-else', $this->marker($a));
+    }
+
+    #[Test]
+    public function the_marker_says_accepted_with_the_submission_uid_before_the_app_is_told() : void
+    {
+        Event::fake([SubmissionFailed::class]);
+        $this->accept();
+        $job = $this->queued(OrgOrder::create());
+        $job->withFakeQueueInteractions();
+        $seen = null;
+
+        Event::listen(SubmissionAccepted::class, function () use (&$seen, $job) {
+            $seen = $this->marker($job);
+        });
+
+        $job->handle();
+
+        $this->assertSame('accepted:SUB1', $seen);
+        $this->assertSame('done', $this->marker($job));
+    }
+
+    #[Test]
+    public function a_redelivery_after_a_crash_between_the_rows_and_the_announcement_finishes_the_job() : void
+    {
+        $this->accept();
+        $order = OrgOrder::create();
+        $job = $this->queued($order);
+        $job->withFakeQueueInteractions();
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $job->handle();
+
+        // as if the worker died right after the rows were written and the marker said accepted
+        Queue::fake();
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $this->setMarker($job, 'accepted:SUB1');
+
+        $this->redelivered($job)->handle();
+
+        $this->assertSame(1, $this->posts(), 'no second POST');
+        $this->assertSame(1, MyinvoisDocument::count());
+        Queue::assertPushed(PollSubmission::class, fn ($poll) => $poll->submissionUid === 'SUB1');
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Event::assertDispatchedTimes(SubmissionAccepted::class, 1);
+        Event::assertDispatched(SubmissionAccepted::class, fn ($e) => $e->submissionUid === 'SUB1' && $e->documentNumbers === ['INV-0001']);
+        $this->assertSame('done', $this->marker($job));
+
+        // told once
+        $this->redelivered($job)->handle();
+        Event::assertDispatchedTimes(SubmissionAccepted::class, 1);
     }
 
     #[Test]

@@ -125,6 +125,7 @@ class MyinvoisFake extends Myinvois
         if ($documents === 'sample') $documents = [$this->getSample()];
 
         $documents = collect($documents)->values()->all();
+        $this->postStarted = false;
 
         $this->assertParentsCover($documents);
 
@@ -148,6 +149,9 @@ class MyinvoisFake extends Myinvois
         }
 
         try {
+            // like the real client: set just before the hook, so a hook that throws leaves it true
+            $this->postStarted = true;
+
             if ($this->beforePost) ($this->beforePost)();
 
             $response = $this->makeSubmissionResponse($documents);
