@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 use Jiannius\Myinvois\Helpers\UBL;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
+use Jiannius\Myinvois\Support\SubmissionLock;
 use PHPUnit\Framework\Assert as PHPUnit;
 
 /**
@@ -22,6 +23,11 @@ use PHPUnit\Framework\Assert as PHPUnit;
  * reject are recorded for assertions and persist MyinvoisDocument rows exactly
  * like the real pipeline (consolidated-aware), so observers and parent-status
  * write-back behave normally. Read endpoints return canned JSON.
+ *
+ * It also honours forParents() (rows are stamped with their parent, and the same
+ * in-flight lock and SUBMITTED / VALID refusal apply), and the queue jobs resolve
+ * app('myinvois'), so Myinvois::queueSubmission() + the jobs run against it. For a
+ * "submitted now, resolved later" flow use pollResolvesTo().
  */
 class MyinvoisFake extends Myinvois
 {
@@ -46,12 +52,37 @@ class MyinvoisFake extends Myinvois
     /** @var array<int, array{pattern: string, body: array, status: int}> */
     protected array $apiResponses = [];
 
+    /**
+     * When set, submissions are saved as `submitted` and only getSubmission() (the poll
+     * job, the sweep) resolves them to this status.
+     */
+    protected ?string $pollStatus = null;
+
+    /** @var array<int, string> LHDN-style validation messages for rows resolved to invalid. */
+    protected array $validationErrors = ['Fake validation error'];
+
     // ---- configuration -------------------------------------------------
 
     /** Set the lifecycle status faked submissions resolve to. */
     public function resolveStatus(string $status) : static
     {
         $this->status = $status;
+        return $this;
+    }
+
+    /**
+     * Save faked submissions as `submitted` and resolve them to $status ('valid' or
+     * 'invalid') only when getSubmission() is called -- what the poll job and the
+     * myinvois:sync sweep do. For an `invalid` outcome pass the messages LHDN would give.
+     *
+     * @param  array<int, string>|null  $errors
+     */
+    public function pollResolvesTo(string $status, ?array $errors = null) : static
+    {
+        $this->pollStatus = $status;
+
+        if ($errors !== null) $this->validationErrors = $errors;
+
         return $this;
     }
 
@@ -94,15 +125,84 @@ class MyinvoisFake extends Myinvois
         if ($documents === 'sample') $documents = [$this->getSample()];
 
         $documents = collect($documents)->values()->all();
-        $response = $this->makeSubmissionResponse($documents);
 
-        $this->submitted[] = ['documents' => $documents, 'response' => $response];
+        $this->assertParentsCover($documents);
 
-        $created = $this->persistSubmitted($response, $documents);
+        // the same in-flight lock + SUBMITTED / VALID refusal as the real client
+        $preprod = (bool) $this->getSettings('preprod');
+        $parents = $this->parentsOf($documents);
+        $owner = $this->lockOwner;
+
+        if ($parents) {
+            try {
+                if ($owner) SubmissionLock::ensure($parents, $preprod, $owner);
+                else $owner = SubmissionLock::acquire($parents, $preprod);
+
+                SubmissionLock::assertSubmittable($parents, $preprod);
+            }
+            catch (\Throwable $e) {
+                if ($owner) SubmissionLock::release($parents, $preprod, $owner);
+
+                throw $e;
+            }
+        }
+
+        try {
+            $response = $this->makeSubmissionResponse($documents);
+
+            $this->submitted[] = ['documents' => $documents, 'response' => $response];
+
+            $created = $this->persistSubmitted($response, $documents);
+        }
+        finally {
+            if ($owner) SubmissionLock::release($parents, $preprod, $owner);
+        }
 
         return $created->isNotEmpty()
             ? ['myinvois_documents' => $created, 'response' => $response]
             : $response;
+    }
+
+    /**
+     * Resolves `submitted` rows to the status set with pollResolvesTo(); with none set
+     * the rows already hold their final status, so this just reports them. A canned
+     * respondToApi('documentsubmissions/*') body still wins.
+     */
+    public function getSubmission($uid, $pageNo = null, $pageSize = null)
+    {
+        foreach ($this->apiResponses as $stub) {
+            if (Str::is($stub['pattern'], 'documentsubmissions/'.$uid)) return parent::getSubmission($uid, $pageNo, $pageSize);
+        }
+
+        $this->apiCalls[] = ['uri' => 'documentsubmissions/'.$uid, 'method' => 'get', 'data' => ['pageNo' => $pageNo, 'pageSize' => $pageSize]];
+
+        if (! Schema::hasTable('myinvois_documents')) return ['submissionUid' => $uid, 'documentSummary' => []];
+
+        $summary = (MyinvoisDocument::$useModel)::query()
+            ->where('submission_uid', $uid)
+            ->get()
+            ->groupBy('document_uuid')
+            ->map(function ($rows, $uuid) use ($uid) {
+                $status = $this->pollStatus && $rows->first()->status?->is('submitted')
+                    ? $this->pollStatus
+                    : $rows->first()->status?->value;
+
+                $item = $this->summaryFor($uuid, $uid, $status);
+
+                if ($status) $this->updateMyinvoisDocuments($item);
+
+                return $item;
+            })
+            ->values()
+            ->all();
+
+        return ['submissionUid' => $uid, 'documentSummary' => $summary];
+    }
+
+    /** The post-submit status poll never sleeps. */
+    protected function pollAfterSubmit($submissionUid) : void
+    {
+        //
     }
 
     public function cancelDocument($uid, $reason = null)
@@ -210,12 +310,7 @@ class MyinvoisFake extends Myinvois
                 'invoiceCodeNumber' => data_get($document, 'number'),
             ];
 
-            $summary[] = [
-                'uuid' => $uuid,
-                'submissionUid' => $this->submissionUid,
-                'status' => ucfirst($this->status),
-                'longId' => 'fake-longid-'.$uuid,
-            ];
+            $summary[] = $this->summaryFor($uuid, $this->submissionUid, $this->pollStatus ? 'submitted' : $this->status);
         }
 
         return [
@@ -223,6 +318,29 @@ class MyinvoisFake extends Myinvois
             'acceptedDocuments' => $accepted,
             'documentSummary' => $summary,
         ];
+    }
+
+    /** A documentSummary entry as LHDN reports it. */
+    protected function summaryFor(string $uuid, string $submissionUid, ?string $status) : array
+    {
+        $summary = [
+            'uuid' => $uuid,
+            'submissionUid' => $submissionUid,
+            'status' => ucfirst((string) $status),
+            'longId' => 'fake-longid-'.$uuid,
+        ];
+
+        if ($status === 'invalid') {
+            $summary['validationResults'] = [
+                'status' => 'Invalid',
+                'validationSteps' => [[
+                    'status' => 'Invalid',
+                    'error' => ['innerError' => collect($this->validationErrors)->map(fn ($message) => ['error' => $message])->all()],
+                ]],
+            ];
+        }
+
+        return $summary;
     }
 
     protected function persistSubmitted(array $response, array $documents) : Collection
@@ -245,9 +363,10 @@ class MyinvoisFake extends Myinvois
                         'submission_uid' => $submissionUid,
                         'document_number' => data_get($lineItem, 'description'),
                         'consolidate_number' => data_get($document, 'number'),
-                        'status' => $this->status,
+                        'status' => $this->pollStatus ? 'submitted' : $this->status,
                         'is_preprod' => $this->getSettings('preprod'),
                         'response' => $summary,
+                        ...$this->parentAttributes(data_get($lineItem, 'description')),
                     ]));
                 }
             }
@@ -256,9 +375,10 @@ class MyinvoisFake extends Myinvois
                     'document_uuid' => data_get($data, 'uuid'),
                     'submission_uid' => $submissionUid,
                     'document_number' => data_get($data, 'invoiceCodeNumber'),
-                    'status' => $this->status,
+                    'status' => $this->pollStatus ? 'submitted' : $this->status,
                     'is_preprod' => $this->getSettings('preprod'),
                     'response' => $summary,
+                    ...$this->parentAttributes(data_get($data, 'invoiceCodeNumber')),
                 ]));
             }
         }
