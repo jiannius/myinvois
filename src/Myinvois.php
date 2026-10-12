@@ -2,11 +2,13 @@
 
 namespace Jiannius\Myinvois;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
+use Jiannius\Myinvois\Contracts\ResolvesMyinvoisClient;
 use Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException;
 use Jiannius\Myinvois\Exceptions\MyinvoisException;
 use Jiannius\Myinvois\Exceptions\MyinvoisPermissionException;
@@ -16,6 +18,7 @@ use Jiannius\Myinvois\Helpers\Signature;
 use Jiannius\Myinvois\Helpers\UBL;
 use Jiannius\Myinvois\Helpers\Validator;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
+use Jiannius\Myinvois\Support\SubmissionLock;
 use Jiannius\Myinvois\Testing\MyinvoisFake;
 
 class Myinvois
@@ -49,6 +52,24 @@ class Myinvois
     protected int|float|null $timeoutCap = null;
 
     /**
+     * The parent models of the documents being submitted, keyed by the number of the
+     * myinvois_documents row each one owns (see forParents()).
+     *
+     * @var array<string, Model>
+     */
+    protected array $parents = [];
+
+    /**
+     * Owner token of a lock the caller (a queue job) already holds for $parents.
+     */
+    protected ?string $lockOwner = null;
+
+    /**
+     * Whether submitDocuments() polls for the verdict inline once LHDN accepts.
+     */
+    protected bool $polls = true;
+
+    /**
      * Swap the `myinvois` container binding for an in-memory fake (no network,
      * no signing, no sleeping). Host-app code calling app('myinvois')->... then
      * hits the fake. Returns it so tests can configure and assert against it.
@@ -60,6 +81,73 @@ class Myinvois
         app()->instance('myinvois', $fake);
 
         return $fake;
+    }
+
+    /**
+     * A fresh client configured for a parent model: app('myinvois') (so a fake applies),
+     * run through the parent's ResolvesMyinvoisClient contract when it has one. This is
+     * how the queue jobs and the status sweep get per-org credentials back on a worker.
+     * Parents without the contract use the plain config cascade.
+     */
+    public static function clientFor(Model $parent) : static
+    {
+        $client = app('myinvois');
+
+        if ($parent instanceof ResolvesMyinvoisClient) {
+            $configured = $parent->configureMyinvoisClient($client);
+
+            if ($configured instanceof self) $client = $configured;
+        }
+
+        return $client;
+    }
+
+    /**
+     * Link the documents of the next submitDocuments() call to their parent models.
+     *
+     * $parents maps each myinvois_documents row's `document_number` to its model: the
+     * invoice number, or for a consolidated document each line item's description. The
+     * rows are created with parent_type / parent_id stamped, and the submission takes the
+     * in-flight lock of every parent (MyinvoisInFlightException when one is held, or its
+     * latest submission is SUBMITTED / VALID).
+     *
+     * $lockOwner is for the queue job that already acquired the locks: they are then
+     * re-checked but neither taken nor released here.
+     *
+     * @param  array<string, Model>|\Illuminate\Support\Collection  $parents
+     */
+    public function forParents($parents, ?string $lockOwner = null) : static
+    {
+        $this->parents = collect($parents)->all();
+        $this->lockOwner = $lockOwner;
+
+        return $this;
+    }
+
+    /**
+     * Skip the inline status poll after a submission is accepted: the rows are saved as
+     * `submitted` and resolved later (the poll job, or the myinvois:sync sweep).
+     */
+    public function withoutPolling(bool $without = true) : static
+    {
+        $this->polls = ! $without;
+
+        return $this;
+    }
+
+    /**
+     * The myinvois_documents row numbers a flat document will produce: its own number, or
+     * for a consolidated document the description of each line item.
+     *
+     * @return array<int, string>
+     */
+    public static function rowNumbers($document) : array
+    {
+        if (UBL::isConsolidated($document)) {
+            return collect(data_get($document, 'line_items', []))->pluck('description')->filter()->unique()->values()->all();
+        }
+
+        return array_values(array_filter([data_get($document, 'number')]));
     }
 
     /**
@@ -573,30 +661,78 @@ class Myinvois
 
         throw_if(!$pkey || !$cert, \Exception::class, 'Missing private key / certificate');
 
-        $api = $this->callApi(
-            uri: 'documentsubmissions',
-            method: 'POST',
-            data: [
-                'documents' => collect($documents)->map(function ($document) use ($pkey, $cert) {
-                    $codeNumber = data_get($document, 'number');
-                    $document = UBL::build($document);
-                    $document = Signature::build($document, $pkey, $cert);
-                    $json = json_encode($document);
-                    $hash = hash('sha256', $json);
-                    $base64 = base64_encode($json);
+        $this->assertParentsCover($documents);
 
-                    return [
-                        'format' => 'JSON',
-                        'document' => $base64,
-                        'documentHash' => $hash,
-                        'codeNumber' => $codeNumber,
-                    ];
-                })->toArray(),
-            ],
-            perMinute: 60,
-        );
+        $preprod = (bool) $this->getSettings('preprod');
+        $parents = $this->parentsOf($documents);
+        $owner = $this->lockOwner;
+        $acquired = false;
 
-        if ($myinvoisDocuments = $this->createMyinvoisDocuments($api->json(), $documents)) {
+        if ($parents) {
+            if ($owner) SubmissionLock::ensure($parents, $preprod, $owner);
+            else {
+                $owner = SubmissionLock::acquire($parents, $preprod);
+                $acquired = true;
+            }
+
+            try {
+                SubmissionLock::assertSubmittable($parents, $preprod);
+            }
+            catch (\Throwable $e) {
+                if ($acquired) SubmissionLock::release($parents, $preprod, $owner);
+
+                throw $e;
+            }
+        }
+
+        // We free the lock we took once the outcome is known. After an ambiguous failure
+        // (a timeout / 5xx: LHDN may have accepted the batch) it is kept until its TTL so
+        // nobody resubmits blindly. A lock the caller passed in is the caller's to free.
+        $release = $acquired;
+
+        try {
+            $api = $this->callApi(
+                uri: 'documentsubmissions',
+                method: 'POST',
+                data: [
+                    'documents' => collect($documents)->map(function ($document) use ($pkey, $cert) {
+                        $codeNumber = data_get($document, 'number');
+                        $document = UBL::build($document);
+                        $document = Signature::build($document, $pkey, $cert);
+                        $json = json_encode($document);
+                        $hash = hash('sha256', $json);
+                        $base64 = base64_encode($json);
+
+                        return [
+                            'format' => 'JSON',
+                            'document' => $base64,
+                            'documentHash' => $hash,
+                            'codeNumber' => $codeNumber,
+                        ];
+                    })->toArray(),
+                ],
+                perMinute: 60,
+            );
+
+            // accepted by LHDN: from here a failure to save the rows must not free the lock
+            if (data_get($api->json(), 'acceptedDocuments')) $release = false;
+
+            $myinvoisDocuments = $this->persistMyinvoisDocuments($api->json(), $documents);
+
+            $release = $acquired;
+        }
+        catch (MyinvoisException $e) {
+            if ($e->mayHaveReachedMyinvois()) $release = false;
+
+            throw $e;
+        }
+        finally {
+            if ($release && $owner) SubmissionLock::release($parents, $preprod, $owner);
+        }
+
+        if ($myinvoisDocuments) {
+            if ($this->polls) $this->pollAfterSubmit(data_get($api->json(), 'submissionUid'));
+
             return [
                 'myinvois_documents' => $myinvoisDocuments,
                 'response' => $api->json(),
@@ -604,6 +740,42 @@ class Myinvois
         }
 
         return $api->json();
+    }
+
+    /**
+     * The parents the given documents' rows belong to (what the submission locks).
+     *
+     * @return array<int, Model>
+     */
+    protected function parentsOf($documents) : array
+    {
+        return collect($documents)
+            ->flatMap(fn ($document) => static::rowNumbers($document))
+            ->map(fn ($number) => $this->parents[$number] ?? null)
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Every row of the documents must have a parent when forParents() is used -- checked
+     * before any network call, so a half-linked submission can never be created.
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected function assertParentsCover($documents) : void
+    {
+        if (!$this->parents) return;
+
+        $missing = collect($documents)
+            ->flatMap(fn ($document) => static::rowNumbers($document))
+            ->reject(fn ($number) => isset($this->parents[$number]))
+            ->unique()
+            ->values();
+
+        if ($missing->isNotEmpty()) {
+            throw new \InvalidArgumentException('No parent model given for: '.$missing->join(', '));
+        }
     }
 
     /**
@@ -655,9 +827,33 @@ class Myinvois
     }
 
     /**
-     * Create the myinvois documents
+     * Create the myinvois documents, then poll LHDN for the verdict (unless
+     * withoutPolling() was called).
      */
     public function createMyinvoisDocuments($response, $documents)
+    {
+        $myinvoisDocuments = $this->persistMyinvoisDocuments($response, $documents);
+
+        if ($myinvoisDocuments && $this->polls) $this->pollAfterSubmit(data_get($response, 'submissionUid'));
+
+        return $myinvoisDocuments;
+    }
+
+    /**
+     * The parent_type / parent_id of a row, from forParents().
+     */
+    protected function parentAttributes($number) : array
+    {
+        $parent = $this->parents[$number] ?? null;
+
+        return $parent ? ['parent_type' => $parent->getMorphClass(), 'parent_id' => $parent->getKey()] : [];
+    }
+
+    /**
+     * Save one `submitted` row per accepted document (per line item for a consolidated
+     * one), stamped with its parent when forParents() was used.
+     */
+    protected function persistMyinvoisDocuments($response, $documents)
     {
         if (!Schema::hasTable('myinvois_documents')) return;
 
@@ -681,6 +877,7 @@ class Myinvois
                         'consolidate_number' => data_get($document, 'number'),
                         'status' => 'submitted',
                         'is_preprod' => $this->getSettings('preprod'),
+                        ...$this->parentAttributes(data_get($lineItem, 'description')),
                     ]));
                 }
             }
@@ -691,13 +888,23 @@ class Myinvois
                     'document_number' => data_get($data, 'invoiceCodeNumber'),
                     'status' => 'submitted',
                     'is_preprod' => $this->getSettings('preprod'),
+                    ...$this->parentAttributes(data_get($data, 'invoiceCodeNumber')),
                 ]));
             }
         }
 
-        // immediately update the document status with max 2 retries
+        return $myinvoisDocuments;
+    }
+
+    /**
+     * Immediately update the document status with max 2 retries.
+     */
+    protected function pollAfterSubmit($submissionUid) : void
+    {
+        $model = MyinvoisDocument::$useModel;
         $try = 1;
         $max = 3;
+
         while ($try <= $max) {
             sleep(2);
 
@@ -715,8 +922,6 @@ class Myinvois
             if ($model::where('submission_uid', $submissionUid)->where('status', 'submitted')->count()) $try++;
             else $try = $max + 1;
         }
-
-        return $myinvoisDocuments;
     }
 
     /**

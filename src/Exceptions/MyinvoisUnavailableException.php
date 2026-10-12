@@ -61,6 +61,17 @@ class MyinvoisUnavailableException extends MyinvoisException
     }
 
     /**
+     * A timeout / dropped connection / 5xx on an API call may have been processed anyway,
+     * so it is ambiguous. A failed token request or a 429 definitely was not.
+     */
+    public function mayHaveReachedMyinvois() : bool
+    {
+        if ($this->endpoint !== null && str_contains($this->endpoint, '/connect/token')) return false;
+
+        return $this->status === null || $this->status >= 500;
+    }
+
+    /**
      * Why the connection failed (e.g. "cURL error 28: Operation timed out ..."),
      * with URL query strings removed. Null when the failure was an HTTP response.
      */

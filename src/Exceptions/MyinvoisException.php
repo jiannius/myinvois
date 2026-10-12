@@ -54,6 +54,16 @@ class MyinvoisException extends RuntimeException
     }
 
     /**
+     * Whether the failed request may nevertheless have been processed by MyInvois (so a
+     * blind retry could duplicate it). False for every failure where MyInvois definitely
+     * did not act on the request: a rejected token, a 403, a 429, an in-flight refusal.
+     */
+    public function mayHaveReachedMyinvois() : bool
+    {
+        return false;
+    }
+
+    /**
      * The URL that was called (without any query string), when known.
      */
     public function getEndpoint() : ?string
