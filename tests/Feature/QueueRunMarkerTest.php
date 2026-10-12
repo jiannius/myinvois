@@ -281,7 +281,7 @@ class QueueRunMarkerTest extends TestCase
         Event::assertNotDispatched(SubmissionFailed::class);
         Event::assertDispatchedTimes(SubmissionAccepted::class, 1);
         $this->assertSame('done', $this->marker($a), 'the overtaken copy leaves the marker alone');
-        $a->assertNotReleased();
+        $a->assertReleased(SubmitDocuments::CLAIMED_SECONDS);
     }
 
     #[Test]
@@ -309,6 +309,132 @@ class QueueRunMarkerTest extends TestCase
         Event::assertNotDispatched(SubmissionFailed::class);
         Event::assertNotDispatched(SubmissionAccepted::class);
         $this->assertSame('claimed:someone-else', $this->marker($a), 'not this copy\'s marker: not deleted, not marked done');
+        $a->assertReleased(SubmitDocuments::CLAIMED_SECONDS);
+    }
+
+    #[Test]
+    public function an_overtaken_copy_releases_itself_instead_of_acking_the_job() : void
+    {
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $order = OrgOrder::create();
+        $a = $this->queued($order);
+        $a->withFakeQueueInteractions();
+
+        // B claimed the run and has not posted yet
+        Http::fake([
+            '*/connect/token' => function () use ($a) {
+                $this->setMarker($a, 'claimed:B');
+
+                return Http::response(['access_token' => 'tok', 'expires_in' => 3600]);
+            },
+            '*documentsubmissions*' => Http::response(['submissionUid' => 'SUB1']),
+        ]);
+
+        $a->handle();
+
+        // returning normally would delete the job row B shares: it stays queued for a re-check
+        $a->assertReleased(SubmitDocuments::CLAIMED_SECONDS);
+        $a->assertNotDeleted();
+        $a->assertNotFailed();
+        $this->assertSame(0, $this->posts());
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Event::assertNotDispatched(SubmissionAccepted::class);
+        $this->assertSame('claimed:B', $this->marker($a), 'B\'s marker is untouched');
+        $this->assertFalse($this->lockIsFree($order), 'the lock is B\'s to free');
+    }
+
+    #[Test]
+    public function the_re_check_after_the_other_copy_died_before_its_post_submits_exactly_once() : void
+    {
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $order = OrgOrder::create();
+        $a = $this->queued($order);
+        $a->withFakeQueueInteractions();
+
+        $overtaken = false;
+
+        Http::fake([
+            '*/connect/token' => function () use ($a, &$overtaken) {
+                if (! $overtaken) $this->setMarker($a, 'claimed:B');
+                $overtaken = true;
+
+                return Http::response(['access_token' => 'tok', 'expires_in' => 3600]);
+            },
+            '*documentsubmissions*' => Http::response([
+                'submissionUid' => 'SUB1',
+                'acceptedDocuments' => [['uuid' => 'UID1', 'invoiceCodeNumber' => 'INV-0001']],
+            ]),
+        ]);
+
+        $a->handle();
+        $a->assertReleased(SubmitDocuments::CLAIMED_SECONDS);
+        $this->assertSame(0, $this->posts());
+
+        // B died before the POST; its claimed marker lapsed. The released job comes back.
+        Cache::forget('myinvois:submit-run:'.$a->lockOwner);
+
+        $this->redelivered($a)->handle();
+
+        $this->assertSame(1, $this->posts());
+        $this->assertSame(1, MyinvoisDocument::count());
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Event::assertDispatchedTimes(SubmissionAccepted::class, 1);
+        $this->assertSame('done', $this->marker($a));
+    }
+
+    #[Test]
+    public function the_re_check_after_the_other_copy_finished_stays_silent_and_acks() : void
+    {
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $order = OrgOrder::create();
+        $a = $this->queued($order);
+        $a->withFakeQueueInteractions();
+        $b = $this->redelivered($a);
+
+        $this->fakeWithTakeover($a, $b);
+
+        $a->handle();
+        $a->assertReleased(SubmitDocuments::CLAIMED_SECONDS);
+        $this->assertSame(1, $this->posts());
+
+        $again = $this->redelivered($a);
+        $again->handle();
+
+        $this->assertSame(1, $this->posts(), 'no second POST');
+        $this->assertSame(1, MyinvoisDocument::count());
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Event::assertDispatchedTimes(SubmissionAccepted::class, 1);
+        $again->assertNotReleased();
+        $this->assertSame('done', $this->marker($a));
+    }
+
+    #[Test]
+    public function the_re_check_after_the_other_copy_died_mid_post_reports_ambiguous_once() : void
+    {
+        Event::fake([SubmissionFailed::class, SubmissionAccepted::class]);
+        $a = $this->queued(OrgOrder::create());
+        $a->withFakeQueueInteractions();
+
+        Http::fake([
+            '*/connect/token' => function () use ($a) {
+                $this->setMarker($a, 'claimed:B');
+
+                return Http::response(['access_token' => 'tok', 'expires_in' => 3600]);
+            },
+        ]);
+
+        $a->handle();
+        $a->assertReleased(SubmitDocuments::CLAIMED_SECONDS);
+
+        // B reached `posting` and the worker died
+        $this->setMarker($a, 'posting');
+
+        $this->redelivered($a)->handle();
+
+        $this->assertSame(0, $this->posts());
+        Event::assertDispatchedTimes(SubmissionFailed::class, 1);
+        Event::assertDispatched(SubmissionFailed::class, fn ($e) => $e->ambiguous);
+        $this->assertSame('done', $this->marker($a));
     }
 
     #[Test]

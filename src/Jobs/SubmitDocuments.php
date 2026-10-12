@@ -187,16 +187,28 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             throw $e;
         }
 
+        // Overtaken by another copy. Returning normally would ack the job, and a copy that
+        // shares the job row (the database driver) would lose it: if that copy then dies
+        // before its POST, nothing would redeliver. So this one stays queued and re-checks the
+        // marker after the other copy's `claimed` marker would have lapsed: `done` / `accepted`
+        // / `posting` are handled as always, an absent or stale `claimed` means it died and
+        // this copy submits. A release is not an exception, so $maxExceptions is untouched,
+        // $tries is unlimited and retryUntil() still bounds it; it ends as soon as a re-check
+        // finds the marker settled or proceeds itself.
+        if ($this->superseded) {
+            $this->release(static::CLAIMED_SECONDS);
+
+            return;
+        }
+
         // finished (accepted, failed or ambiguous): a later redelivery is a silent no-op.
         // Absent marker = the job released itself for a retry, which must run again. A marker
         // that is another copy's claim belongs to that copy: leave it.
-        if (! $this->superseded) {
-            try {
-                $this->finishRun();
-            }
-            catch (Throwable $e) {
-                report($e);
-            }
+        try {
+            $this->finishRun();
+        }
+        catch (Throwable $e) {
+            report($e);
         }
     }
 
@@ -242,7 +254,8 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         }
         catch (RunSupersededException) {
             // another copy owns the run and has (or will) report: no announcement, and the
-            // lock stays -- it is shared with that copy, whose own run frees it
+            // lock stays -- it is shared with that copy, whose own run frees it. handle()
+            // releases this job for a later re-check instead of acking it.
             $this->superseded = true;
 
             return;
