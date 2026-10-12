@@ -4,6 +4,7 @@ namespace Jiannius\Myinvois\Jobs;
 
 use DateTimeInterface;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
@@ -47,6 +48,29 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     public const RETRY_DELAYS = [30, 60, 120];
 
     /**
+     * States of the run marker (see claimRun()).
+     */
+    public const RUN_CLAIMED = 'claimed';
+
+    public const RUN_POSTING = 'posting';
+
+    public const RUN_DONE = 'done';
+
+    /**
+     * Seconds the `claimed` marker lives: one job timeout plus slack. Only a run that is
+     * still before the POST can be waiting on it, and that run is allowed to proceed anyway.
+     */
+    public const CLAIMED_SECONDS = 150;
+
+    /**
+     * Seconds the `posting` and `done` markers live. They must outlast the queue's
+     * `retry_after` (a redelivery can only come after it), whatever it is set to, or a
+     * redelivery would find no marker and post again. Both are safe to keep: `posting`
+     * reports an ambiguous failure, `done` is silent.
+     */
+    public const SETTLED_SECONDS = 86400;
+
+    /**
      * Unlimited by the queue's own counter: a release() for the rate limiter also counts as
      * an attempt there. retryUntil() bounds the job instead, and retries are counted here.
      */
@@ -61,7 +85,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     /**
      * Keep this below the queue connection's `retry_after`: a job that outlives it is handed
      * to a second worker while the first is still running (the run marker stops the second
-     * from posting again, but it is better never to need it).
+     * from posting again, but it is better never to need it). CLAIMED_SECONDS follows it.
      */
     public $timeout = 120;
 
@@ -99,10 +123,50 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
 
     public function handle() : void
     {
-        // A second copy of this job (a queue whose retry_after is shorter than the run is
-        // re-serving it) must not post again, and must not report a false failure.
-        if (! $this->claimRun()) return;
+        $state = $this->claimRun();
 
+        // A second copy of this job (a queue whose retry_after is shorter than the run, or a
+        // worker that died and the job was served again) must not post twice, and must not
+        // be silent when the first copy may have reached LHDN.
+        if ($state === static::RUN_DONE) return;
+
+        if ($state === static::RUN_POSTING) {
+            // the POST may have gone out and nobody saw the outcome: the lock is left alone
+            // to expire, nothing is posted, and the app is told once
+            $this->announceStopped();
+            $this->setRunState(static::RUN_DONE);
+
+            return;
+        }
+
+        // `claimed` (this run, or a copy that died before it posted) proceeds: the lock
+        // check and assertSubmittable() inside submitDocuments() still guard it.
+        try {
+            $this->submit();
+        }
+        catch (Throwable $e) {
+            // Escaped on its own (the queue backs off and retries): if nothing was sent the
+            // retry must be free to run, so the marker goes. After the POST started it stays
+            // `posting`, and the retry reports an ambiguous failure instead of posting again.
+            if ($this->runState() === static::RUN_CLAIMED) $this->forgetRun();
+
+            throw $e;
+        }
+
+        // finished (accepted, failed or ambiguous): a later redelivery is a silent no-op.
+        // Absent marker = the job released itself for a retry, which must run again.
+        if ($this->runState() !== null) {
+            try {
+                $this->setRunState(static::RUN_DONE);
+            }
+            catch (Throwable $e) {
+                report($e);
+            }
+        }
+    }
+
+    protected function submit() : void
+    {
         try {
             $models = $this->resolveParents();
 
@@ -135,7 +199,11 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
 
         try {
             // forParents() also refuses parents that resolve to more than one client
-            $result = $client->forParents($models, $this->lockOwner)->withoutPolling()->submitDocuments($this->documents);
+            $result = $client
+                ->forParents($models, $this->lockOwner)
+                ->withoutPolling()
+                ->beforePost(fn () => $this->setRunState(static::RUN_POSTING))
+                ->submitDocuments($this->documents);
         }
         catch (MyinvoisInFlightException $e) {
             $this->announce(SubmissionFailed::IN_FLIGHT, [$e->getMessage()]);
@@ -183,6 +251,11 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     {
         report($e);
 
+        $this->announceStopped();
+    }
+
+    protected function announceStopped() : void
+    {
         $this->announce(SubmissionFailed::AMBIGUOUS, [
             'The submission job was stopped before it finished. Check MyInvois before submitting again.',
         ], ambiguous: true);
@@ -313,13 +386,55 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
-     * Mark this submission as being run (or done). False when another copy of the job
-     * already did, so a redelivery returns early. Keyed on the lock owner token, unique per
-     * queueSubmission() call.
+     * Claim the run and return the state to act on. The marker is keyed on the lock owner
+     * token (unique per queueSubmission() call) and moves claimed -> posting -> done:
+     *
+     * - `claimed`: a run is before the POST, or died there. Proceed.
+     * - `posting`: the POST was (about to be) sent. Never post again; report ambiguous.
+     * - `done`: a definite outcome was reached. Silent no-op.
+     *
+     * Returns `claimed` for a fresh claim as well as for a previous `claimed` one.
      */
-    protected function claimRun() : bool
+    protected function claimRun() : string
     {
-        return Cache::store(config('services.myinvois.lock_store'))->add($this->runKey(), true, 86400);
+        $store = $this->store();
+
+        if ($store->add($this->runKey(), static::RUN_CLAIMED, static::CLAIMED_SECONDS)) {
+            return static::RUN_CLAIMED;
+        }
+
+        $state = $store->get($this->runKey());
+
+        if ($state === static::RUN_POSTING || $state === static::RUN_DONE) return $state;
+
+        // `claimed`, or expired between the add and the get: run, and refresh the marker
+        $this->setRunState(static::RUN_CLAIMED);
+
+        return static::RUN_CLAIMED;
+    }
+
+    protected function runState() : ?string
+    {
+        return $this->store()->get($this->runKey());
+    }
+
+    protected function setRunState(string $state) : void
+    {
+        $this->store()->put(
+            $this->runKey(),
+            $state,
+            $state === static::RUN_CLAIMED ? static::CLAIMED_SECONDS : static::SETTLED_SECONDS,
+        );
+    }
+
+    protected function forgetRun() : void
+    {
+        $this->store()->forget($this->runKey());
+    }
+
+    protected function store() : Repository
+    {
+        return Cache::store(config('services.myinvois.lock_store'));
     }
 
     /**
@@ -328,7 +443,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function retryLater(int $seconds) : void
     {
-        Cache::store(config('services.myinvois.lock_store'))->forget($this->runKey());
+        $this->forgetRun();
 
         $this->release($seconds);
     }

@@ -18,12 +18,15 @@ class MyinvoisDocumentObserver
     protected static ?\WeakMap $changes = null;
 
     /**
-     * Nesting depth of deferEvents(), and the events held back while it is above zero.
-     *
-     * @var array<int, DocumentStatusChanged>
+     * Nesting depth of deferEvents().
      */
     protected static int $deferring = 0;
 
+    /**
+     * The events held back while $deferring is above zero.
+     *
+     * @var array<int, DocumentStatusChanged>
+     */
     protected static array $deferred = [];
 
     /**

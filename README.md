@@ -223,7 +223,7 @@ class Invoice extends Model implements ResolvesMyinvoisClient
 }
 ```
 
-Set whatever differs per submitter; anything you leave out falls back to `config('services.myinvois.*')`. A parent that does not implement the contract simply uses the config cascade. `Myinvois::clientFor($model)` returns the configured client (a fresh `app('myinvois')`, so `Myinvois::fake()` applies) and is public if you need it elsewhere.
+Set whatever differs per submitter; anything you leave out falls back to `config('services.myinvois.*')`. A parent that does not implement the contract simply uses the config cascade. `Myinvois::clientFor($model)` returns the configured client (a fresh `app('myinvois')`, so `Myinvois::fake()` applies) and is public if you need it elsewhere. `configureMyinvoisClient()` runs once per distinct parent in a call (for the single-client check, then again on the worker), so keep it cheap: no network calls, and `loadMissing()` rather than fresh queries.
 
 ### 2. Queue the submission
 
@@ -278,8 +278,8 @@ Event::listen(SubmissionFailed::class, function (SubmissionFailed $event) {
 - **Retries** happen only when LHDN definitely did not receive the request: a failed token request or a 429. The job waits `Retry-After` when LHDN gives one, otherwise 30s, 60s, 120s, up to three retries, then fires `SubmissionFailed` (`unavailable`).
 - **After an ambiguous failure** (a timeout or 5xx on the submission POST) the job does **not** retry and the lock stays until its TTL (`lock_seconds`, default 300). Check LHDN (`getSubmission()`, `getRecentDocuments()`) before resubmitting. If it did not go through, the user simply resubmits once the lock expires.
 - **Unhandled errors**: a failure while resolving the client is reported and announced as `SubmissionFailed` (`error`), with the lock freed. A listener that throws is reported (`report()`) and cannot stop the submission, the saving of rows or the poll. As a last net each job stops after three unhandled exceptions, waiting 30s, 60s, 120s between them.
-- **Redelivery**: set the queue connection's `retry_after` **above** the submit job's timeout (120 seconds; Laravel's default of 90 is too low). If a copy is delivered twice anyway, the second one returns without posting again.
-- **Transactions**: both jobs run only after the open database transaction commits (`afterCommit`).
+- **Redelivery**: set the queue connection's `retry_after` **above** the submit job's timeout (120 seconds; Laravel's default of 90 is too low). The job keeps a run marker per submission (`claimed`, then `posting` right before the request leaves, then `done`). A copy delivered again after a worker died *before* the request was sent submits normally. After it died *while posting*, the copy does not post: it fires `SubmissionFailed` (`ambiguous`) and keeps the lock until its TTL, so check LHDN before resubmitting. After a finished run a redelivery does nothing. An exception that escapes the job before the request leaves the retry free to run.
+- **Transactions**: both jobs run only after the open database transaction commits (`afterCommit`). If you call `queueSubmission()` inside a transaction that then rolls back, the job is discarded and the package frees the locks it took, so you can queue the same documents again.
 - **Rate limits**: a job never sleeps. When the package's rate limiter is capped it `release()`s itself for the time left.
 - **Polling**: once LHDN accepts, `Jobs\PollSubmission` asks for the verdict after 0, 10, 20, 40, 60, 120, 300 and 600 seconds (about 19 minutes), and stops when every row is final. Anything still `submitted` after that is left to the sweep. If the poll job gave up and the sweep resolves the rows later, `DocumentStatusChanged` still fires, but `SubmissionSucceeded` / `SubmissionFailed (invalid)` do not.
 - **Payload**: the flat documents, parent references, the preprod flag, the lock token and your `context`. `SubmitDocuments` is `ShouldBeEncrypted` (so `APP_KEY` must be set on the app). No key, certificate, secret or token is ever serialised.
@@ -304,7 +304,7 @@ One cache lock per parent and environment (`myinvois:submit:{prod|preprod}:{morp
 | `--dry-run` | List what would be checked without calling LHDN. |
 | `--include-valid` | Also re-check recent `valid` rows. Off by default. |
 
-Behaviour worth knowing: only rows of the current environment are touched (outside production just `is_preprod = true`; in production `false` or `null`), inbound rows are skipped, rows without a parent are skipped and counted, and one `getSubmission()` call updates every row of a consolidated submission. Each submission is checked with the client its parent resolves to; if a client's credentials fail, the rest of that client's submissions are skipped for the run while other clients continue. Status writes go through the observer, so a superseded row never flips a resubmitted parent back, and the parent's `updated_at` is not touched. The command exits non-zero when any check failed.
+The sweep checks the newest submissions first and `--limit` counts submissions, so an old stuck submission is reached only after the newer ones have cleared. Behaviour worth knowing: only rows of the current environment are touched (outside production just `is_preprod = true`; in production `false` or `null`), inbound rows are skipped, rows without a parent are skipped and counted, and one `getSubmission()` call updates every row of a consolidated submission. Each submission is checked with the client its parent resolves to; if a client's credentials fail, the rest of that client's submissions are skipped for the run while other clients continue. Status writes go through the observer, so a superseded row never flips a resubmitted parent back, and the parent's `updated_at` is not touched. The command exits non-zero when any check failed.
 
 The schedule is **off by default**. Opt in with `services.myinvois.sync_schedule`: `'hourly'` or any cron expression. The package then schedules `myinvois:sync` with `withoutOverlapping(30)->onOneServer()`.
 
@@ -327,7 +327,7 @@ Queue::pushed(PollSubmission::class)->first()->withFakeQueueInteractions()->hand
 Event::assertDispatched(SubmissionSucceeded::class);
 ```
 
-The fake honours `forParents()` (rows are stamped and the same lock applies) and records submissions for `assertSubmitted()`, `assertDocumentSubmitted($number)` and friends. It cannot simulate HTTP failures; for those use `Http::fake()` against the real class, as the package's own tests do.
+The fake honours `forParents()` (rows are stamped and the same lock applies) and records submissions for `assertSubmitted()`, `assertDocumentSubmitted($number)` and friends. `assertSingleClient()` cannot detect parents that resolve to different clients under the fake (every parent is configured on the one shared fake instance), so test that rule with the real class. The fake cannot simulate HTTP failures; for those use `Http::fake()` against the real class, as the package's own tests do.
 
 ## Document shape
 

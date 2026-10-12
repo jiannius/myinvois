@@ -5,6 +5,7 @@ namespace Jiannius\Myinvois;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
@@ -84,6 +85,17 @@ class Myinvois
      * catches an unexpected exception can tell whether LHDN may have received the batch.
      */
     protected bool $postStarted = false;
+
+    /**
+     * Set with beforePost(): called right before the submission POST is sent.
+     */
+    protected ?\Closure $beforePost = null;
+
+    /**
+     * $beforePost while submitDocuments() has its POST in flight; sendRequest() calls it.
+     * Null for every other request.
+     */
+    protected ?\Closure $beforeSend = null;
 
     /**
      * Swap the `myinvois` container binding for an in-memory fake (no network,
@@ -175,6 +187,18 @@ class Myinvois
     }
 
     /**
+     * Run $callback right before submitDocuments() sends the POST -- after building, signing,
+     * the lock checks, the token and the rate limiter, so it only runs when the request
+     * really is about to leave. A queue job uses it to record that LHDN may now have the batch.
+     */
+    public function beforePost(?\Closure $callback) : static
+    {
+        $this->beforePost = $callback;
+
+        return $this;
+    }
+
+    /**
      * Whether the last submitDocuments() got as far as sending the POST to MyInvois.
      */
     public function postStarted() : bool
@@ -231,6 +255,13 @@ class Myinvois
         $owner = SubmissionLock::acquire($models, $preprod);
 
         try {
+            // The job runs only after the surrounding transaction commits (afterCommit) and is
+            // discarded when it rolls back: nothing would ever free the locks, and the caller
+            // could not queue the same documents again until they expire.
+            if (DB::transactionLevel() > 0) {
+                DB::afterRollBack(fn () => SubmissionLock::release($models, $preprod, $owner));
+            }
+
             SubmissionLock::assertSubmittable($models, $preprod);
 
             SubmitDocuments::dispatch(
@@ -657,6 +688,8 @@ class Myinvois
      */
     protected function sendRequest(string $method, string $endpoint, $data, string $token) : Response
     {
+        if ($this->beforeSend) ($this->beforeSend)();
+
         try {
             return Http::withToken($token)
                 ->connectTimeout($this->getSettings('connect_timeout'))
@@ -876,13 +909,19 @@ class Myinvois
             })->toArray();
 
             $this->postStarted = true;
+            $this->beforeSend = $this->beforePost;
 
-            $api = $this->callApi(
-                uri: 'documentsubmissions',
-                method: 'POST',
-                data: ['documents' => $payload],
-                perMinute: 60,
-            );
+            try {
+                $api = $this->callApi(
+                    uri: 'documentsubmissions',
+                    method: 'POST',
+                    data: ['documents' => $payload],
+                    perMinute: 60,
+                );
+            }
+            finally {
+                $this->beforeSend = null;
+            }
 
             // accepted by LHDN: from here a failure to save the rows must not free the lock
             if (data_get($api->json(), 'acceptedDocuments')) $keepLock = true;

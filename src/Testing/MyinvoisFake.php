@@ -148,6 +148,8 @@ class MyinvoisFake extends Myinvois
         }
 
         try {
+            if ($this->beforePost) ($this->beforePost)();
+
             $response = $this->makeSubmissionResponse($documents);
 
             $this->submitted[] = ['documents' => $documents, 'response' => $response];
