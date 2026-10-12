@@ -9,6 +9,7 @@
         "illuminate/http": "^13.0",
         "illuminate/cache": "^13.0",
         "illuminate/queue": "^13.0",
+        "illuminate/console": "^13.0",
         "symfony/http-client": "^7.0",
         "noki/laravel-xml-converter": "^1.0",
         "simplesoftwareio/simple-qrcode": "^4.2"
