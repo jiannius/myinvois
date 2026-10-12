@@ -238,7 +238,7 @@ Myinvois::queueSubmission(
 ```
 
 - `parents` maps each **row's `document_number`** to its model: the invoice number, or for a consolidated document each line item's `description` (one row, so one parent, per line). Every row must have a parent, otherwise `InvalidArgumentException` is thrown before anything happens.
-- All documents in one call must be submitted by the same client (the same org). Queue one call per org.
+- All documents in one call must be submitted by the same client (the same org). The call compares each parent's resolved client id, on-behalf-of and environment and throws `InvalidArgumentException` on a mismatch, before anything is locked. Queue one call per org. `forParents()` enforces the same rule.
 - The call takes an in-flight lock on every parent, dispatches `Jobs\SubmitDocuments`, and returns immediately. It never contacts LHDN.
 - If a parent is already being submitted, or its latest submission in that environment is `submitted` or `valid`, it throws `MyinvoisInFlightException` straight away (`getParentReferences()` says which). `invalid` and `cancelled` parents can be submitted again.
 
@@ -277,6 +277,9 @@ Event::listen(SubmissionFailed::class, function (SubmissionFailed $event) {
 
 - **Retries** happen only when LHDN definitely did not receive the request: a failed token request or a 429. The job waits `Retry-After` when LHDN gives one, otherwise 30s, 60s, 120s, up to three retries, then fires `SubmissionFailed` (`unavailable`).
 - **After an ambiguous failure** (a timeout or 5xx on the submission POST) the job does **not** retry and the lock stays until its TTL (`lock_seconds`, default 300). Check LHDN (`getSubmission()`, `getRecentDocuments()`) before resubmitting. If it did not go through, the user simply resubmits once the lock expires.
+- **Unhandled errors**: a failure while resolving the client is reported and announced as `SubmissionFailed` (`error`), with the lock freed. A listener that throws is reported (`report()`) and cannot stop the submission, the saving of rows or the poll. As a last net each job stops after three unhandled exceptions, waiting 30s, 60s, 120s between them.
+- **Redelivery**: set the queue connection's `retry_after` **above** the submit job's timeout (120 seconds; Laravel's default of 90 is too low). If a copy is delivered twice anyway, the second one returns without posting again.
+- **Transactions**: both jobs run only after the open database transaction commits (`afterCommit`).
 - **Rate limits**: a job never sleeps. When the package's rate limiter is capped it `release()`s itself for the time left.
 - **Polling**: once LHDN accepts, `Jobs\PollSubmission` asks for the verdict after 0, 10, 20, 40, 60, 120, 300 and 600 seconds (about 19 minutes), and stops when every row is final. Anything still `submitted` after that is left to the sweep. If the poll job gave up and the sweep resolves the rows later, `DocumentStatusChanged` still fires, but `SubmissionSucceeded` / `SubmissionFailed (invalid)` do not.
 - **Payload**: the flat documents, parent references, the preprod flag, the lock token and your `context`. `SubmitDocuments` is `ShouldBeEncrypted` (so `APP_KEY` must be set on the app). No key, certificate, secret or token is ever serialised.
@@ -297,7 +300,7 @@ One cache lock per parent and environment (`myinvois:submit:{prod|preprod}:{morp
 
 | Option | |
 |---|---|
-| `--limit=` | Maximum **submissions** to check per run (default `services.myinvois.sync_limit`, 100). Oldest first. |
+| `--limit=` | Maximum **submissions** to check per run (default `services.myinvois.sync_limit`, 100). Newest first, so submissions that never resolve cannot starve recent ones. |
 | `--dry-run` | List what would be checked without calling LHDN. |
 | `--include-valid` | Also re-check recent `valid` rows. Off by default. |
 

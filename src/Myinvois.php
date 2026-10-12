@@ -20,6 +20,7 @@ use Jiannius\Myinvois\Helpers\UBL;
 use Jiannius\Myinvois\Helpers\Validator;
 use Jiannius\Myinvois\Jobs\SubmitDocuments;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
+use Jiannius\Myinvois\Models\Observers\MyinvoisDocumentObserver;
 use Jiannius\Myinvois\Support\ParentReference;
 use Jiannius\Myinvois\Support\SubmissionLock;
 use Jiannius\Myinvois\Testing\MyinvoisFake;
@@ -126,6 +127,11 @@ class Myinvois
      * in-flight lock of every parent (MyinvoisInFlightException when one is held, or its
      * latest submission is SUBMITTED / VALID).
      *
+     * All the parents must resolve (clientFor()) to the same client -- client id,
+     * on-behalf-of and environment -- or InvalidArgumentException is thrown: a submission is
+     * signed and sent with one client's credentials, so a mixed batch would go out under the
+     * wrong org.
+     *
      * $lockOwner is for the queue job whose dispatcher already took the locks: they are
      * then re-checked (and re-taken if they lapsed) instead of acquired, and freed on the
      * same terms as locks taken here.
@@ -134,7 +140,12 @@ class Myinvois
      */
     public function forParents($parents, ?string $lockOwner = null) : static
     {
-        $this->parents = collect($parents)->all();
+        $parents = collect($parents)->all();
+
+        // one submission is signed and sent with one client's credentials
+        static::assertSingleClient($parents);
+
+        $this->parents = $parents;
         $this->lockOwner = $lockOwner;
 
         return $this;
@@ -212,6 +223,10 @@ class Myinvois
             ->flatMap(fn ($document) => static::rowNumbers($document))
             ->mapWithKeys(fn ($number) => [$number => $parents[$number]]);
 
+        // the job signs and sends everything with the first parent's client: refuse a batch
+        // that spans clients before taking any lock
+        static::assertSingleClient($models);
+
         $preprod = (bool) static::clientFor($models->first())->getSettings('preprod');
         $owner = SubmissionLock::acquire($models, $preprod);
 
@@ -232,6 +247,42 @@ class Myinvois
             SubmissionLock::release($models, $preprod, $owner);
 
             throw $e;
+        }
+    }
+
+    /**
+     * Refuse parents that resolve (clientFor()) to different clients. The client is
+     * identified by its client id, on-behalf-of and environment.
+     *
+     * @param  iterable<Model>  $parents
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function assertSingleClient(iterable $parents) : void
+    {
+        $identities = [];
+        $seen = [];
+
+        foreach ($parents as $parent) {
+            $key = ParentReference::make($parent);
+            $key = $key['type'].':'.$key['id'];
+
+            if (isset($seen[$key])) continue;
+
+            $seen[$key] = true;
+            $settings = static::clientFor($parent)->getSettings();
+
+            $identities[json_encode([
+                data_get($settings, 'client_id'),
+                data_get($settings, 'on_behalf_of'),
+                (bool) data_get($settings, 'preprod'),
+            ])] = true;
+        }
+
+        if (count($identities) > 1) {
+            throw new \InvalidArgumentException(
+                'All documents in one submission must be for the same client (client id, on-behalf-of and environment). Submit one batch per org.'
+            );
         }
     }
 
@@ -765,17 +816,27 @@ class Myinvois
     {
         if ($documents === 'sample') $documents = [$this->getSample()];
 
-        $pkey = $this->getSettings('private_key');
-        $cert = $this->getSettings('certificate');
-
-        throw_if(!$pkey || !$cert, \Exception::class, 'Missing private key / certificate');
-
-        $this->assertParentsCover($documents);
-
         $preprod = (bool) $this->getSettings('preprod');
         $parents = $this->parentsOf($documents);
         $owner = $this->lockOwner;
         $this->postStarted = false;
+
+        try {
+            $pkey = $this->getSettings('private_key');
+            $cert = $this->getSettings('certificate');
+
+            throw_if(!$pkey || !$cert, \Exception::class, 'Missing private key / certificate');
+
+            $this->assertParentsCover($documents);
+        }
+        catch (\Throwable $e) {
+            // a definite failure before anything is sent: a lock the caller (a queue job)
+            // already took for us is freed now, not left to expire. Owner-checked, so a
+            // lock someone else holds is untouched.
+            if ($owner && $parents) SubmissionLock::release($parents, $preprod, $owner);
+
+            throw $e;
+        }
 
         if ($parents) {
             try {
@@ -968,6 +1029,12 @@ class Myinvois
      */
     protected function persistMyinvoisDocuments($response, $documents)
     {
+        // status events fire once every row is written, and a listener cannot stop the loop
+        return MyinvoisDocumentObserver::deferEvents(fn () => $this->createMyinvoisRows($response, $documents));
+    }
+
+    protected function createMyinvoisRows($response, $documents)
+    {
         if (!Schema::hasTable('myinvois_documents')) return;
 
         $submissionUid = data_get($response, 'submissionUid');
@@ -1070,10 +1137,11 @@ class Myinvois
 
         if (!$documents->count()) return;
 
-        $documents->each(fn ($document) => $document->update([
+        // one event batch for all the rows of the submission, after the last is written
+        MyinvoisDocumentObserver::deferEvents(fn () => $documents->each(fn ($document) => $document->update([
             'status' => strtolower(data_get($response, 'status')),
             'response' => $response,
-        ]));
+        ])));
     }
 
     /**

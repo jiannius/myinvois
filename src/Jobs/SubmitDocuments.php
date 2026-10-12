@@ -52,6 +52,17 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     public $tries = 0;
 
+    /**
+     * Safety net for an exception nothing here handles: the queue stops the job after this
+     * many, instead of re-running it forever (`$tries = 0` never gives up on its own).
+     */
+    public $maxExceptions = 3;
+
+    /**
+     * Keep this below the queue connection's `retry_after`: a job that outlives it is handed
+     * to a second worker while the first is still running (the run marker stops the second
+     * from posting again, but it is better never to need it).
+     */
     public $timeout = 120;
 
     /**
@@ -66,6 +77,9 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         public string $lockOwner,
         public array $context = [],
     ) {
+        // run only once the surrounding database transaction (if any) has committed, so the
+        // worker never sees parents that do not exist yet (Queueable already declares the property)
+        $this->afterCommit = true;
     }
 
     public function retryUntil() : DateTimeInterface
@@ -73,29 +87,54 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         return now()->addHour();
     }
 
+    /**
+     * Seconds before the queue re-runs the job after an exception nothing handled.
+     *
+     * @return array<int, int>
+     */
+    public function backoff() : array
+    {
+        return static::RETRY_DELAYS;
+    }
+
     public function handle() : void
     {
-        $models = $this->resolveParents();
+        // A second copy of this job (a queue whose retry_after is shorter than the run is
+        // re-serving it) must not post again, and must not report a false failure.
+        if (! $this->claimRun()) return;
 
-        if ($models === null) {
-            SubmissionLock::release($this->parents, $this->preprod, $this->lockOwner);
-            $this->announce(SubmissionFailed::ERROR, ['A document to submit no longer exists.']);
+        try {
+            $models = $this->resolveParents();
 
-            return;
+            if ($models === null) {
+                SubmissionLock::release($this->parents, $this->preprod, $this->lockOwner);
+                $this->announce(SubmissionFailed::ERROR, ['A document to submit no longer exists.']);
+
+                return;
+            }
+
+            $client = Myinvois::clientFor(reset($models))->withoutThrottleSleep();
+
+            if ((bool) $client->getSettings('preprod') !== $this->preprod) {
+                SubmissionLock::release($this->parents, $this->preprod, $this->lockOwner);
+                $this->announce(SubmissionFailed::ENVIRONMENT, [
+                    'The MyInvois environment of this document changed after it was queued. Submit it again.',
+                ]);
+
+                return;
+            }
         }
-
-        $client = Myinvois::clientFor(reset($models))->withoutThrottleSleep();
-
-        if ((bool) $client->getSettings('preprod') !== $this->preprod) {
+        catch (Throwable $e) {
+            // nothing was sent: a client that cannot be resolved is a definite failure
+            report($e);
             SubmissionLock::release($this->parents, $this->preprod, $this->lockOwner);
-            $this->announce(SubmissionFailed::ENVIRONMENT, [
-                'The MyInvois environment of this document changed after it was queued. Submit it again.',
-            ]);
+            $this->announce(SubmissionFailed::ERROR, [$e->getMessage()]);
 
             return;
         }
 
         try {
+            // forParents() also refuses parents that resolve to more than one client
             $result = $client->forParents($models, $this->lockOwner)->withoutPolling()->submitDocuments($this->documents);
         }
         catch (MyinvoisInFlightException $e) {
@@ -105,7 +144,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         }
         catch (MyinvoisThrottledException $e) {
             // our own limiter is capped and nothing was sent: wait for a slot, never sleep
-            $this->release(max(1, $e->getRetryAfter() ?? 1));
+            $this->retryLater(max(1, $e->getRetryAfter() ?? 1));
 
             return;
         }
@@ -117,14 +156,23 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         catch (Throwable $e) {
             report($e);
 
-            // whether the lock was kept is decided where it was taken: kept when the POST
-            // had started, freed otherwise
+            // the lock is kept when the POST had started, freed otherwise (a no-op when
+            // submitDocuments() already freed it)
+            if (! $client->postStarted()) SubmissionLock::release($this->parents, $this->preprod, $this->lockOwner);
+
             $this->announce(SubmissionFailed::ERROR, [$e->getMessage()], ambiguous: $client->postStarted());
 
             return;
         }
 
-        $this->handleResult($result);
+        try {
+            $this->handleResult($result);
+        }
+        catch (Throwable $e) {
+            // LHDN has the documents and the rows are saved: there is nothing left to retry,
+            // and a rerun would only report a false failure
+            report($e);
+        }
     }
 
     /**
@@ -155,7 +203,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             $retry = $this->countRetry();
 
             if ($retry <= count(static::RETRY_DELAYS)) {
-                $this->release($e->getRetryAfter() ?? static::RETRY_DELAYS[$retry - 1]);
+                $this->retryLater($e->getRetryAfter() ?? static::RETRY_DELAYS[$retry - 1]);
 
                 return;
             }
@@ -203,11 +251,18 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         $numbers = $rows->pluck('document_number')->filter()->unique()->values()->all();
         $uid = $rows->first()->submission_uid;
 
-        event(new SubmissionAccepted($this->referencesFor($numbers), $numbers, $uid, $this->context));
+        // The package's own follow-up comes first and a listener cannot stop it: the poll is
+        // dispatched, then the app is told. If the dispatch itself fails the sweep is the net.
+        try {
+            PollSubmission::dispatch($uid, $this->referencesFor($numbers), $this->preprod, $this->context)
+                ->onConnection(config('services.myinvois.queue_connection'))
+                ->onQueue(config('services.myinvois.queue'));
+        }
+        catch (Throwable $e) {
+            report($e);
+        }
 
-        PollSubmission::dispatch($uid, $this->referencesFor($numbers), $this->preprod, $this->context)
-            ->onConnection(config('services.myinvois.queue_connection'))
-            ->onQueue(config('services.myinvois.queue'));
+        $this->fire(new SubmissionAccepted($this->referencesFor($numbers), $numbers, $uid, $this->context));
     }
 
     /**
@@ -232,7 +287,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     {
         $numbers ??= array_keys($this->parents);
 
-        event(new SubmissionFailed(
+        $this->fire(new SubmissionFailed(
             $this->referencesFor($numbers),
             array_values($numbers),
             $submissionUid,
@@ -241,6 +296,46 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             $ambiguous,
             $this->context,
         ));
+    }
+
+    /**
+     * Tell the app. A throwing listener is reported and goes no further: it must not undo
+     * or repeat work the package has already done.
+     */
+    protected function fire(object $event) : void
+    {
+        try {
+            event($event);
+        }
+        catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * Mark this submission as being run (or done). False when another copy of the job
+     * already did, so a redelivery returns early. Keyed on the lock owner token, unique per
+     * queueSubmission() call.
+     */
+    protected function claimRun() : bool
+    {
+        return Cache::store(config('services.myinvois.lock_store'))->add($this->runKey(), true, 86400);
+    }
+
+    /**
+     * Release the job for another attempt (nothing was sent). The run marker is dropped so
+     * the next attempt is not mistaken for a redelivery.
+     */
+    protected function retryLater(int $seconds) : void
+    {
+        Cache::store(config('services.myinvois.lock_store'))->forget($this->runKey());
+
+        $this->release($seconds);
+    }
+
+    protected function runKey() : string
+    {
+        return 'myinvois:submit-run:'.$this->lockOwner;
     }
 
     /**

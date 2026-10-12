@@ -18,6 +18,53 @@ class MyinvoisDocumentObserver
     protected static ?\WeakMap $changes = null;
 
     /**
+     * Nesting depth of deferEvents(), and the events held back while it is above zero.
+     *
+     * @var array<int, DocumentStatusChanged>
+     */
+    protected static int $deferring = 0;
+
+    protected static array $deferred = [];
+
+    /**
+     * Run $callback with DocumentStatusChanged held back, then fire them all once it is
+     * done (even if it threw). The package uses it around writing several rows, so the
+     * app's listeners see the finished batch and can never interrupt it half way.
+     */
+    public static function deferEvents(\Closure $callback)
+    {
+        static::$deferring++;
+
+        try {
+            return $callback();
+        }
+        finally {
+            static::$deferring--;
+
+            if (static::$deferring === 0) {
+                $events = static::$deferred;
+                static::$deferred = [];
+
+                foreach ($events as $event) static::announce($event);
+            }
+        }
+    }
+
+    /**
+     * A throwing listener is reported, never rethrown: it must not abort the save of the
+     * row (or of the rows after it) that raised the event.
+     */
+    protected static function announce(DocumentStatusChanged $event) : void
+    {
+        try {
+            event($event);
+        }
+        catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
      * The model created event: a new row with a status is a change from nothing.
      */
     public function created($document)
@@ -51,7 +98,12 @@ class MyinvoisDocumentObserver
         $this->syncParent($document);
 
         // DocumentStatusChanged, from any code path, after the parent status is in place
-        if ($change) event(new DocumentStatusChanged($document, ...$change));
+        if (! $change) return;
+
+        $event = new DocumentStatusChanged($document, ...$change);
+
+        if (static::$deferring) static::$deferred[] = $event;
+        else static::announce($event);
     }
 
     protected function changes() : \WeakMap

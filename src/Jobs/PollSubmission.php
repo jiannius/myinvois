@@ -19,6 +19,7 @@ use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
 use Jiannius\Myinvois\Support\ParentReference;
+use Throwable;
 
 /**
  * Asks LHDN for the verdict on an accepted submission until its rows are final (VALID /
@@ -46,6 +47,12 @@ class PollSubmission implements ShouldQueue
      */
     public $tries = 0;
 
+    /**
+     * Safety net for an exception nothing here handles: stop after this many instead of
+     * re-running forever (`$tries = 0`).
+     */
+    public $maxExceptions = 3;
+
     public $timeout = 60;
 
     /**
@@ -58,6 +65,9 @@ class PollSubmission implements ShouldQueue
         public bool $preprod,
         public array $context = [],
     ) {
+        // run only once the surrounding database transaction (if any) has committed, so the
+        // worker never sees parents that do not exist yet (Queueable already declares the property)
+        $this->afterCommit = true;
     }
 
     public function retryUntil() : DateTimeInterface
@@ -65,16 +75,34 @@ class PollSubmission implements ShouldQueue
         return now()->addHours(2);
     }
 
+    /**
+     * Seconds before the queue re-runs the job after an exception nothing handled.
+     *
+     * @return array<int, int>
+     */
+    public function backoff() : array
+    {
+        return SubmitDocuments::RETRY_DELAYS;
+    }
+
     public function handle() : void
     {
-        $parent = collect($this->parents)->map(fn ($reference) => ParentReference::resolve($reference))->filter()->first();
+        try {
+            $parent = collect($this->parents)->map(fn ($reference) => ParentReference::resolve($reference))->filter()->first();
 
-        // nothing to build a client from: the sweep resolves the rows if the parent is back
-        if (! $parent) return;
+            // nothing to build a client from: the sweep resolves the rows if the parent is back
+            if (! $parent) return;
 
-        $client = Myinvois::clientFor($parent)->withoutThrottleSleep();
+            $client = Myinvois::clientFor($parent)->withoutThrottleSleep();
 
-        if ((bool) $client->getSettings('preprod') !== $this->preprod) return;
+            if ((bool) $client->getSettings('preprod') !== $this->preprod) return;
+        }
+        catch (Throwable $e) {
+            // a client that cannot be resolved will not resolve on the next poll either
+            report($e);
+
+            return;
+        }
 
         try {
             $client->getSubmission($this->submissionUid);
@@ -93,6 +121,12 @@ class PollSubmission implements ShouldQueue
         }
         catch (MyinvoisException) {
             // not yet
+        }
+        catch (Throwable $e) {
+            // not a LHDN problem (configuration, a bug): report it and leave the rows to the sweep
+            report($e);
+
+            return;
         }
 
         $rows = $this->rows();
@@ -136,7 +170,7 @@ class PollSubmission implements ShouldQueue
         $valid = $rows->filter(fn ($row) => $row->status?->is(Status::VALID));
 
         if ($invalid->isNotEmpty()) {
-            event(new SubmissionFailed(
+            $this->fire(new SubmissionFailed(
                 $this->referencesOf($invalid),
                 $this->numbersOf($invalid),
                 $this->submissionUid,
@@ -148,12 +182,26 @@ class PollSubmission implements ShouldQueue
         }
 
         if ($valid->isNotEmpty()) {
-            event(new SubmissionSucceeded(
+            $this->fire(new SubmissionSucceeded(
                 $this->referencesOf($valid),
                 $this->numbersOf($valid),
                 $this->submissionUid,
                 $this->context,
             ));
+        }
+    }
+
+    /**
+     * A throwing listener is reported, never rethrown: the announcement is already marked
+     * as made, so a retry of the job would not repeat it anyway.
+     */
+    protected function fire(object $event) : void
+    {
+        try {
+            event($event);
+        }
+        catch (Throwable $e) {
+            report($e);
         }
     }
 

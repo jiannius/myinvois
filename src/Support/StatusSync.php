@@ -79,12 +79,14 @@ class StatusSync
             ->distinct()
             ->count('submission_uid');
 
-        // one row per submission, oldest first; ids only until we know what to ask
+        // one row per submission, newest first (ULIDs sort by time); ids only until we know
+        // what to ask. Newest first so submissions that never resolve cannot fill the limit
+        // run after run and starve the recent ones that are still worth asking about.
         $submissions = $this->candidates($preprod)
             ->toBase()
-            ->selectRaw('submission_uid, min(id) as first_id')
+            ->selectRaw('submission_uid, max(id) as last_id')
             ->groupBy('submission_uid')
-            ->orderBy('first_id')
+            ->orderByDesc('last_id')
             ->limit($this->limit)
             ->get();
 
@@ -93,7 +95,7 @@ class StatusSync
         $failedClients = [];
 
         foreach ($submissions as $submission) {
-            $row = (new $model)->newQueryWithoutScopes()->find($submission->first_id);
+            $row = (new $model)->newQueryWithoutScopes()->find($submission->last_id);
             $parent = $row ? ParentReference::resolve(['type' => $row->parent_type, 'id' => $row->parent_id]) : null;
 
             if (! $parent) {

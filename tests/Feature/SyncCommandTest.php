@@ -215,8 +215,26 @@ class SyncCommandTest extends TestCase
 
         $this->sync(['--limit' => 2]);
 
-        $this->assertSame(['SUB-1', 'SUB-2'], $this->asked(), 'oldest first, two submissions');
-        $this->assertSame('submitted', MyinvoisDocument::where('document_uuid', 'U-3')->first()->status->value);
+        $this->assertSame(['SUB-3', 'SUB-2'], $this->asked(), 'newest first, two submissions');
+        $this->assertSame('submitted', MyinvoisDocument::where('document_uuid', 'U-1')->first()->status->value);
+    }
+
+    #[Test]
+    public function submissions_that_never_resolve_cannot_starve_newer_ones() : void
+    {
+        // the old submissions stay `submitted` however often LHDN is asked
+        $this->lhdn([
+            'SUB-1' => ['U-1' => 'Submitted'],
+            'SUB-2' => ['U-2' => 'Submitted'],
+            'SUB-3' => ['U-3' => 'Valid'],
+        ]);
+        $this->row(Order::create(), ['submission_uid' => 'SUB-1', 'document_uuid' => 'U-1']);
+        $this->row(Order::create(), ['submission_uid' => 'SUB-2', 'document_uuid' => 'U-2']);
+        $this->row(Order::create(), ['submission_uid' => 'SUB-3', 'document_uuid' => 'U-3']);
+
+        $this->sync(['--limit' => 1]);
+
+        $this->assertSame('valid', MyinvoisDocument::where('document_uuid', 'U-3')->first()->status->value);
     }
 
     #[Test]
@@ -229,7 +247,7 @@ class SyncCommandTest extends TestCase
 
         $this->sync();
 
-        $this->assertSame(['SUB-1'], $this->asked());
+        $this->assertSame(['SUB-2'], $this->asked(), 'the newest submission');
     }
 
     #[Test]
@@ -286,7 +304,7 @@ class SyncCommandTest extends TestCase
         // one token attempt, not three
         $this->assertSame(1, Http::recorded(fn ($request) => str_contains($request->url(), 'connect/token'))->count());
         $output = Artisan::output();
-        $this->assertStringContainsString('SUB-1', $output);
+        $this->assertStringContainsString('SUB-3', $output, 'the newest is asked first');
         $this->assertStringContainsString('credentials failed earlier in this run: 2', $output);
     }
 
@@ -302,7 +320,7 @@ class SyncCommandTest extends TestCase
 
         $this->assertSame(1, $this->sync());
 
-        $this->assertSame(['SUB-1', 'SUB-2'], $this->asked());
+        $this->assertSame(['SUB-2', 'SUB-1'], $this->asked());
         $this->assertSame('valid', MyinvoisDocument::where('document_uuid', 'U-2')->first()->status->value);
         $this->assertStringContainsString('SUB-1', Artisan::output());
     }
