@@ -7,9 +7,11 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Jiannius\Myinvois\Contracts\ResolvesMyinvoisClient;
+use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException;
 use Jiannius\Myinvois\Exceptions\MyinvoisException;
 use Jiannius\Myinvois\Exceptions\MyinvoisPermissionException;
@@ -50,6 +52,14 @@ class Myinvois
      * submitDocuments() stays reasonable. The configured timeout wins when it is lower.
      */
     public const POLL_TIMEOUT = 15;
+
+    /**
+     * fetchInvalidReasons(): total timeout (seconds) of each details request, and the
+     * seconds after which it stops starting new ones, so a queue job (60s) always finishes.
+     */
+    public const DETAILS_TIMEOUT = 10;
+
+    public const DETAILS_BUDGET = 30;
 
     /**
      * Temporary ceiling on the total timeout, set only while the post-submit poll runs.
@@ -840,6 +850,76 @@ class Myinvois
     }
 
     /**
+     * Store LHDN's reasons on rows that just turned INVALID. The submission poll
+     * (getSubmission()) reports the verdict only; the reasons live in the document details,
+     * so this makes one getDocumentDetails() call per distinct document uuid (a consolidated
+     * e-invoice's rows share one) and the rows' getErrors() then work.
+     *
+     * Best effort, never throws: a throttle (it never sleeps), an outage, a 4xx or a body
+     * that is not JSON just leaves the rows as they are, so a queue job or the sweep carries
+     * on. Rows that are not INVALID, or already hold validation results, are skipped, so
+     * nothing is fetched twice. The details write keeps the row's status (INVALID stays
+     * INVALID: no DocumentStatusChanged), and the parent's updated_at is not touched.
+     *
+     * @param  iterable<int, MyinvoisDocument>  $rows
+     */
+    public function fetchInvalidReasons(iterable $rows) : void
+    {
+        $uuids = collect($rows)
+            ->filter(fn ($row) => $row->document_uuid && $row->status?->is(Status::INVALID) && ! $row->hasValidationDetails())
+            ->pluck('document_uuid')
+            ->unique()
+            ->values();
+
+        if ($uuids->isEmpty()) return;
+
+        $previousCap = $this->timeoutCap;
+        $previousSleeps = $this->sleepsOnThrottle;
+        $this->timeoutCap = $previousCap === null ? static::DETAILS_TIMEOUT : min($previousCap, static::DETAILS_TIMEOUT);
+        $this->sleepsOnThrottle = false;
+        $started = microtime(true);
+
+        try {
+            foreach ($uuids as $uuid) {
+                if (microtime(true) - $started > static::DETAILS_BUDGET) break;
+
+                try {
+                    $this->getDocumentDetails($uuid);
+                }
+                catch (MyinvoisThrottledException) {
+                    break; // the limiter is capped: nothing more will go out for now
+                }
+                catch (MyinvoisAuthenticationException|MyinvoisPermissionException $e) {
+                    $this->logDetailsFailure($uuid, $e);
+                    break;
+                }
+                catch (MyinvoisException $e) {
+                    $this->logDetailsFailure($uuid, $e);
+
+                    if ($e instanceof MyinvoisUnavailableException && $e->getStatus() === 429) break;
+                }
+                catch (\Throwable $e) {
+                    report($e);
+                    break;
+                }
+            }
+        }
+        finally {
+            $this->timeoutCap = $previousCap;
+            $this->sleepsOnThrottle = $previousSleeps;
+        }
+    }
+
+    protected function logDetailsFailure(string $uuid, MyinvoisException $e) : void
+    {
+        Log::warning('MyInvois: could not fetch the validation details of an invalid document.', [
+            'document_uuid' => $uuid,
+            'status' => $e->getStatus(),
+            'exception' => class_basename($e),
+        ]);
+    }
+
+    /**
      * Search the documents
      */
     public function searchDocuments($data = [])
@@ -1187,11 +1267,26 @@ class Myinvois
 
         if (!$documents->count()) return;
 
+        // a response without a status (a partial body) must not blank the row's status
+        $status = data_get($response, 'status');
+        $status = is_string($status) && $status !== '' ? strtolower($status) : null;
+
         // one event batch for all the rows of the submission, after the last is written
-        MyinvoisDocumentObserver::deferEvents(fn () => $documents->each(fn ($document) => $document->update([
-            'status' => strtolower(data_get($response, 'status')),
-            'response' => $response,
-        ])));
+        MyinvoisDocumentObserver::deferEvents(fn () => $documents->each(function ($document) use ($response, $status) {
+            $attributes = ['response' => $response];
+
+            if ($status) $attributes['status'] = $status;
+
+            // a submission poll (documentSummary) carries no validation results: keep the ones
+            // already stored from the document details while the status has not changed
+            $stored = data_get($document->response, 'validationResults');
+
+            if ($stored !== null && data_get($response, 'validationResults') === null && ($status === null || $status === $document->status?->value)) {
+                $attributes['response'] = [...(array) $response, 'validationResults' => $stored];
+            }
+
+            $document->update($attributes);
+        }));
     }
 
     /**

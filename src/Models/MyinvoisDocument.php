@@ -104,6 +104,15 @@ class MyinvoisDocument extends Model
     }
 
     /**
+     * Whether the response holds LHDN's validation results. A submission poll's
+     * documentSummary does not; the document details do.
+     */
+    public function hasValidationDetails() : bool
+    {
+        return data_get($this->response, 'validationResults') !== null;
+    }
+
+    /**
      * Check if the document is cancellable
      */
     public function isCancellable() : bool

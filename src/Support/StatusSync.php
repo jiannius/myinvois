@@ -18,7 +18,8 @@ use Jiannius\Myinvois\Myinvois;
  * cancel for 72 hours.
  *
  * INVALID is final -- LHDN never turns an INVALID document into a VALID one -- so those
- * rows are never swept.
+ * rows are never swept. Rows this run turns INVALID get LHDN's reasons stored (the poll
+ * summary has none; Myinvois::fetchInvalidReasons() asks the document details, best effort).
  *
  * One getSubmission() call per submission: a consolidated e-invoice has one row per
  * invoice sharing a submission uid, and one answer updates them all. Statuses are written
@@ -144,10 +145,21 @@ class StatusSync
                 continue;
             }
 
+            $after = $this->statuses($submission->submission_uid);
+
             $result['checked']++;
-            $result['changed'] += collect($this->statuses($submission->submission_uid))
-                ->filter(fn ($status, $id) => ($before[$id] ?? null) !== $status)
-                ->count();
+            $result['changed'] += collect($after)->filter(fn ($status, $id) => ($before[$id] ?? null) !== $status)->count();
+
+            // LHDN gives the reasons only in the document details: store them for the rows
+            // that just turned INVALID (best effort: a failure never stops the sweep)
+            $client->fetchInvalidReasons(
+                (new $model)->newQueryWithoutScopes()
+                    ->whereKey(collect($after)
+                        ->filter(fn ($status, $id) => $status === Status::INVALID->value && ($before[$id] ?? null) !== Status::INVALID->value)
+                        ->keys()
+                        ->all())
+                    ->get()
+            );
         }
 
         return $result;

@@ -142,7 +142,11 @@ class PollSubmission implements ShouldQueue
             return;
         }
 
-        $this->announce($rows);
+        // the verdict poll carries no reasons: fetch them before announcing (best effort),
+        // so a job killed here is retried and still announces
+        $client->fetchInvalidReasons($rows);
+
+        $this->announce($this->rows());
     }
 
     /**

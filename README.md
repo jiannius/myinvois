@@ -260,7 +260,7 @@ The submission events carry `parents` (morph class + key, never models), `docume
 | `reason` | Meaning |
 |---|---|
 | `rejected` | LHDN refused some or all documents in the POST. |
-| `invalid` | LHDN accepted, then marked the documents invalid after validating. `errors` are the row's `getErrors()`. |
+| `invalid` | LHDN accepted, then marked the documents invalid after validating. `errors` are LHDN's reasons (the row's `getErrors()`), read from the document details: an INVALID outcome costs one extra `documents/{uuid}/details` call per document (a consolidated e-invoice's rows share one). If that call fails or is rate limited the event still fires, with `errors` empty. |
 | `in_flight` | Another submission holds the lock, or the parent is already `submitted` / `valid`. |
 | `unavailable` | LHDN or its token endpoint stayed down through every retry. Nothing was sent. |
 | `environment` | The client resolved on the worker is not the environment the job was queued for. Submit again. |
@@ -297,7 +297,7 @@ One cache lock per parent and environment (`myinvois:submit:{prod|preprod}:{morp
 - every outbound row still `submitted`, for any parent model; and
 - with `--include-valid`, each parent's latest `valid` row for its first 72 hours.
 
-`invalid` is final (LHDN never turns an invalid document valid), so those rows are never re-checked.
+`invalid` is final (LHDN never turns an invalid document valid), so those rows are never re-checked. A row the sweep turns `invalid` gets LHDN's reasons stored too (one `documents/{uuid}/details` call per document, best effort), so `getErrors()` works on it; the sweep still fires no `SubmissionFailed`.
 
 | Option | |
 |---|---|
@@ -488,7 +488,7 @@ $myinvois->getDocument($uid);
 $myinvois->getDocumentDetails($uid);
 ```
 
-All retrieval methods return the raw decoded JSON response from MyInvois. `getSubmission` and `getDocumentDetails` additionally call `updateMyinvoisDocuments` to sync the local `myinvois_documents` row's `status` and `response` columns.
+All retrieval methods return the raw decoded JSON response from MyInvois. `getSubmission` and `getDocumentDetails` additionally call `updateMyinvoisDocuments` to sync the local `myinvois_documents` row's `status` and `response` columns. The submission poll's summary carries no validation results (only the document details do), so a poll that finds a row `invalid` is followed by one `getDocumentDetails()` per document, done for you by the poll job and the sweep; `getErrors()` reads the stored result.
 
 ## Cancelling and rejecting
 

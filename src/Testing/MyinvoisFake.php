@@ -193,7 +193,10 @@ class MyinvoisFake extends Myinvois
                     ? $this->pollStatus
                     : $rows->first()->status?->value;
 
-                $item = $this->summaryFor($uuid, $uid, $status);
+                // like LHDN, a poll that resolves a row reports the verdict only: the reasons
+                // come from getDocumentDetails() (fetched by the poll job / the sweep)
+                $resolving = $this->pollStatus && $rows->first()->status?->is('submitted');
+                $item = $this->summaryFor($uuid, $uid, $status, ! $resolving);
 
                 if ($status) $this->updateMyinvoisDocuments($item);
 
@@ -203,6 +206,32 @@ class MyinvoisFake extends Myinvois
             ->all();
 
         return ['submissionUid' => $uid, 'documentSummary' => $summary];
+    }
+
+    /**
+     * The details of a document: its status and, for an invalid one, the validation
+     * results (what pollResolvesTo() / resolveStatus() were given). Stored on the rows like
+     * the real call. A canned respondToApi('documents/*') body still wins.
+     */
+    public function getDocumentDetails($uid)
+    {
+        foreach ($this->apiResponses as $stub) {
+            if (Str::is($stub['pattern'], 'documents/'.$uid.'/details')) return parent::getDocumentDetails($uid);
+        }
+
+        $this->apiCalls[] = ['uri' => 'documents/'.$uid.'/details', 'method' => 'get', 'data' => []];
+
+        if (! Schema::hasTable('myinvois_documents')) return [];
+
+        $row = (MyinvoisDocument::$useModel)::query()->where('document_uuid', $uid)->first();
+
+        if (! $row) return [];
+
+        $details = $this->summaryFor($uid, (string) $row->submission_uid, $row->status?->value);
+
+        $this->updateMyinvoisDocuments($details);
+
+        return $details;
     }
 
     /** The post-submit status poll never sleeps. */
@@ -327,7 +356,7 @@ class MyinvoisFake extends Myinvois
     }
 
     /** A documentSummary entry as LHDN reports it. */
-    protected function summaryFor(string $uuid, string $submissionUid, ?string $status) : array
+    protected function summaryFor(string $uuid, string $submissionUid, ?string $status, bool $withErrors = true) : array
     {
         $summary = [
             'uuid' => $uuid,
@@ -336,7 +365,7 @@ class MyinvoisFake extends Myinvois
             'longId' => 'fake-longid-'.$uuid,
         ];
 
-        if ($status === 'invalid') {
+        if ($status === 'invalid' && $withErrors) {
             $summary['validationResults'] = [
                 'status' => 'Invalid',
                 'validationSteps' => [[
