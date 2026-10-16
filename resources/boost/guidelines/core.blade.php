@@ -46,7 +46,7 @@ $response = app('myinvois')
 </code-snippet>
 @endverbatim
 
-`submitDocuments()` runs the pipeline: `UBL::build` → `Signature::build` (XAdES, SHA256) → POST to `documentsubmissions` → persist one `MyinvoisDocument` per accepted doc → poll `getSubmission()` up to 3× with 2s sleeps to flip `submitted` → `valid`/`invalid`. The signing JSON serialization in `Signature::toJson()` is load-bearing — never reformat the document between `UBL::build` and `Signature::build`.
+`submitDocuments()` runs the pipeline: `UBL::build` → `Signature::build` (XAdES, SHA256) → POST to `documentsubmissions` → persist one `MyinvoisDocument` per accepted doc → poll `getSubmission()` up to 3× with 2s sleeps to flip `submitted` → `valid`/`invalid` (`withoutPolling()` skips the poll; `Myinvois::queueSubmission()` moves the whole thing onto a queue, see below). The signing JSON serialization in `Signature::toJson()` is load-bearing — never reformat the document between `UBL::build` and `Signature::build`.
 
 ### Consolidated e-invoices
 
@@ -129,8 +129,9 @@ Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when 
 Every failure talking to MyInvois is a typed exception under `Jiannius\Myinvois\Exceptions`, all extending `MyinvoisException` (a `RuntimeException`). Catch the base type to show one message, or a subclass to react differently:
 
 - `MyinvoisUnavailableException` — network failure/timeout, HTTP 5xx or 429, a token 408/429, or an unusable token response. Transient: tell the user to try again later. For a network failure `getReason()` holds the connection error text (URL query strings stripped; the original exception is not chained, so `getPrevious()` is `null`); for a 429 `getRetryAfter()` may hold seconds.
-- `MyinvoisAuthenticationException` — OAuth token rejected (any 4xx from `/connect/token` except 408/429, e.g. wrong client id/secret or prod vs sandbox mismatch) or a 401 that persists after the SDK has discarded the cached token and retried once with a fresh one. Retrying won't help; fix the credentials.
+- `MyinvoisAuthenticationException` — OAuth token rejected (any 4xx from `/connect/token` except 408/429, e.g. wrong client id/secret or prod vs sandbox mismatch; `unauthorized_client` with an on-behalf-of TIN means the intermediary is not registered/linked for that taxpayer TIN on this environment, and the message says so) or a 401 that persists after the SDK has discarded the cached token and retried once with a fresh one. Retrying won't help; fix the credentials.
 - `MyinvoisPermissionException` — HTTP 403 (taxpayer/intermediary not permitted).
+- `MyinvoisInFlightException` — only from `forParents()` / `queueSubmission()`: the parent is locked by another submission, or its latest submission is already `submitted` / `valid`. Raised before anything is sent.
 
 Each has `getStatus()` (null on a network failure), `getEndpoint()` (no query string), `getResponseBody()` and `getResponseData()`. Don't put the raw body in a user-facing message — a gateway error is usually HTML.
 
@@ -196,6 +197,55 @@ use Jiannius\Myinvois\Models\MyinvoisDocument;
 MyinvoisDocument::useModel(\App\Models\MyinvoisDocument::class);
 </code-snippet>
 @endverbatim
+
+### Queued submission, in-flight lock and status sync
+
+Plain `submitDocuments()` is synchronous: it posts, saves the rows, then polls LHDN inline (seconds per submission). For batches, or whenever the same document must not be submitted twice at once, use the queued path instead. It is additive — don't change existing `submitDocuments()` callers unless asked.
+
+1. Implement `Jiannius\Myinvois\Contracts\ResolvesMyinvoisClient` on the **parent** model (the one with `HasMyinvoisDocument`). `configureMyinvoisClient(Myinvois $client): Myinvois` sets on-behalf-of, preprod and any per-org client id / secret / private key / certificate. It runs on the queue worker and in the sweep, so credentials never go into a job payload. Parents without the contract use the `services.myinvois.*` config cascade. `Myinvois::clientFor($model)` gives the configured client. It runs once per distinct parent in a call (the single-client check, then again on the worker), so keep it cheap: no network calls, use `loadMissing()`.
+2. Call `Myinvois::queueSubmission($documents, $parents, $context)`. `$documents` is the flat contract (validate first). `$parents` maps each row's `document_number` to its model: the invoice number, or for a consolidated document each line item's `description`. Every row needs a parent (`InvalidArgumentException`); one call = one client/org (parents resolving to different client ids / TINs / environments throw `InvalidArgumentException`; `forParents()` too).
+3. Listen to the events. A failed outcome is an event, not a failed queue job.
+
+@verbatim
+<code-snippet name="Queue a submission" lang="php">
+use Jiannius\Myinvois\Contracts\ResolvesMyinvoisClient;
+use Jiannius\Myinvois\Exceptions\MyinvoisInFlightException;
+use Jiannius\Myinvois\Myinvois;
+
+class Invoice extends Model implements ResolvesMyinvoisClient
+{
+    use HasMyinvoisDocument;
+
+    public function configureMyinvoisClient(Myinvois $client) : Myinvois
+    {
+        return $client->setOnBehalfOf($this->org->tin, $this->org->brn)
+            ->setClientId($this->org->myinvois_client_id)
+            ->setClientSecret($this->org->myinvois_client_secret)
+            ->setPrivateKey($this->org->myinvois_private_key)
+            ->setCertificate($this->org->myinvois_certificate)
+            ->setPreprod($this->org->myinvois_preprod);
+    }
+}
+
+try {
+    Myinvois::queueSubmission(
+        documents: [$document],
+        parents: [$invoice->number => $invoice],
+        context: ['batch_id' => $batch->id],   // comes back in every event
+    );
+} catch (MyinvoisInFlightException $e) {
+    // already being submitted, or its latest submission is submitted / valid
+}
+</code-snippet>
+@endverbatim
+
+Events (`Jiannius\Myinvois\Events`): `SubmissionAccepted` (LHDN accepted the POST, rows saved as `submitted`), `SubmissionSucceeded` (valid), `SubmissionFailed` (`$reason`: `rejected`, `invalid` after accept with LHDN's messages in `$errors` (read from `getDocumentDetails()`: an INVALID outcome costs one extra details call per document, and if it fails the event still fires with empty `$errors`), `in_flight`, `unavailable`, `environment`, `error`, `ambiguous`), and `DocumentStatusChanged($row, $from, $to)` for any status change from any path. They carry parent references (morph class + key), document numbers, the submission uid, your `$context`, and no buyer details.
+
+Behaviour to rely on: retries only when LHDN definitely did not get the request (token failure or 429: `Retry-After`, else 30/60/120s, three retries). After a timeout or 5xx on the POST the job does **not** retry and the lock stays until its TTL (`lock_seconds`, default 300) — check LHDN before resubmitting. Jobs never sleep on the rate limiter, they `release()`. Once accepted, `PollSubmission` backs off 10/20/40/60/120/300/600s, then the sweep takes over. The job payload is encrypted (`APP_KEY` required) and holds no credentials. Set the queue connection's `retry_after` above the submit job's 120s timeout (Laravel's default 90s is too low), or a long run is delivered to a second worker. A run marker (`claimed:<run id>` -> `posting` -> `accepted` -> `done`) handles a redelivery: a copy served again takes the marker over and submits normally, and a slower earlier copy checks right before its request that the marker is still its own and stands down and `release()`s itself (150s) so the queue re-checks later in case the other copy died before posting (the lock cannot do this, both copies hold the same token); after a crash while posting it fires `SubmissionFailed` (`ambiguous`) and keeps the lock (no second POST); after a crash once LHDN accepted and the rows were saved it dispatches the poll and fires `SubmissionAccepted`; after a finished run it does nothing. In a rare overlap the app can get `SubmissionFailed` (`ambiguous`) and then `SubmissionAccepted` for the same documents: treat `SubmissionAccepted` / `SubmissionSucceeded` as authoritative. `queueSubmission()` inside a DB transaction that rolls back frees its locks; if it ran in a nested transaction that committed and an outer one then rolls back, Laravel discards the rollback callback and the lock only lapses at its TTL (queue after the outermost transaction instead). A throwing event listener is reported and never stops the submission. Both jobs run after the open DB transaction commits. The lock is a cache lock per parent and environment: use a shared cache store (`services.myinvois.lock_store`) on multi-server setups. Optional config: `queue_connection`, `queue`, `lock_store`, `lock_seconds`, `sync_schedule`, `sync_limit`.
+
+Sync path opt-in: `app('myinvois')->forParents($map)->submitDocuments($docs)` stamps `parent_type` / `parent_id` when LHDN accepts and takes the same lock; `->withoutPolling()` skips the inline poll.
+
+**Status sync** — `php artisan myinvois:sync {--limit=} {--dry-run} {--include-valid}` re-asks LHDN about outbound rows still `submitted` (any parent model), one `getSubmission()` call per submission. `invalid` is final and never re-checked (rows the sweep turns `invalid` get their reasons stored via one `getDocumentDetails()` call per document, so `getErrors()` works; no `SubmissionFailed` is fired); `--include-valid` adds each parent's latest `valid` row for its first 72 hours. The schedule is **off by default**: set `services.myinvois.sync_schedule` to `'hourly'` or a cron expression to have the package schedule it (`withoutOverlapping(30)->onOneServer()`). The sweep checks newest submissions first, so an old stuck one is reached only after newer ones clear. Don't write your own sweep.
 
 ### Other API surfaces
 
@@ -268,12 +318,14 @@ Myinvois::fake()->respondToApi('taxpayer/search/*', ['tin' => 'C1']); // read en
 
 Available assertions on the fake: `assertSubmitted(?callable)`, `assertNothingSubmitted()`, `assertSubmittedCount(int)`, `assertDocumentSubmitted($number)`, `assertCancelled(?$uid)`, `assertNotCancelled()`, `assertRejected(?$uid)`.
 
+The queue jobs resolve `app('myinvois')`, so they run against the fake too. `assertSingleClient()` cannot detect mixed clients under the fake (all parents share the one fake instance); test that rule against the real class. It honours `forParents()` (parent-stamped rows, the same lock and submitted/valid refusal). `pollResolvesTo('valid'|'invalid', ?array $errors)` saves rows as `submitted` and resolves them only when the poll job runs; `resolveStatus('invalid')` makes the rows invalid straight away. Combine with `Queue::fake()` / `Event::fake()` and run the pushed jobs with `->withFakeQueueInteractions()->handle()`.
+
 True end-to-end (a real signature accepted by LHDN) still requires the **preprod sandbox** — the fake proves your wiring, not that LHDN accepts the payload.
 
 ### LHDN constraints to respect
 
 - **72-hour cancellation window** — enforced by `isCancellable()`; LHDN rejects late cancellations anyway.
-- **Rate limits** — already handled by `callApi()` via Laravel `RateLimiter`. If you wrap submission in a queue, don't add a second throttle.
+- **Rate limits** — already handled by `callApi()` via Laravel `RateLimiter`, keyed per endpoint **and per client id** (LHDN limits apply per client id). Use `Myinvois::queueSubmission()` for queued work and don't add a second throttle.
 - **Document shape is the contract** — the flat array in `Helpers/Sample.php` is the documented input. Don't hand-roll UBL.
 - **Preprod vs prod isolation** — preprod docs auto-route to `preprod.myinvois.hasil.gov.my`; status columns are kept separate. The package toggles preprod based on environment, but you can force it with `setPreprod(true|false)`.
 - **Test offline with `Myinvois::fake()` and `validator()`** (see "Testing your integration") — but there is no local dry-run of a real LHDN submission. Validate end-to-end against the preprod sandbox before touching prod.
@@ -295,6 +347,7 @@ The package's repo also keeps a short `docs/lhdn-references.md` with the load-be
 - Build a flat document matching `Helpers/Sample.php`.
 - Call `app('myinvois')->validator($document)` and surface errors before submitting.
 - For consolidated docs: set `is_consolidate => true`, use the `GENERAL_PUBLIC` TIN, and skip line-item classifications.
+- For batches or double-submit protection: implement `ResolvesMyinvoisClient` on the parent, use `Myinvois::queueSubmission()`, listen to the events, and set `sync_schedule` (see "Queued submission").
 - Track status via `$model->myinvois_status` / `latestMyinvoisDocument` rather than re-querying MyInvois.
 - For cancellation, gate the UI on `isCancellable()` so users don't try after the 72-hour window.
 - Test the mapping offline with `validator()` / `UBL::build()`, and the submit/cancel flow with `Myinvois::fake()`, before validating end-to-end on preprod.

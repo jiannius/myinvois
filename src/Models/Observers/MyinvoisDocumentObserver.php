@@ -2,14 +2,122 @@
 
 namespace Jiannius\Myinvois\Models\Observers;
 
+use Jiannius\Myinvois\Enums\Status;
+use Jiannius\Myinvois\Events\DocumentStatusChanged;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 
 class MyinvoisDocumentObserver
 {
     /**
+     * Status changes noted by created() / updated(), announced once saved() has written
+     * the parent. Keyed by the model instance. Static because Laravel builds a new observer
+     * object for every event it dispatches.
+     *
+     * @var \WeakMap<object, array{0: ?Status, 1: ?Status}>|null
+     */
+    protected static ?\WeakMap $changes = null;
+
+    /**
+     * Nesting depth of deferEvents().
+     */
+    protected static int $deferring = 0;
+
+    /**
+     * The events held back while $deferring is above zero.
+     *
+     * @var array<int, DocumentStatusChanged>
+     */
+    protected static array $deferred = [];
+
+    /**
+     * Run $callback with DocumentStatusChanged held back, then fire them all once it is
+     * done (even if it threw). The package uses it around writing several rows, so the
+     * app's listeners see the finished batch and can never interrupt it half way.
+     */
+    public static function deferEvents(\Closure $callback)
+    {
+        static::$deferring++;
+
+        try {
+            return $callback();
+        }
+        finally {
+            static::$deferring--;
+
+            if (static::$deferring === 0) {
+                $events = static::$deferred;
+                static::$deferred = [];
+
+                foreach ($events as $event) static::announce($event);
+            }
+        }
+    }
+
+    /**
+     * A throwing listener is reported, never rethrown: it must not abort the save of the
+     * row (or of the rows after it) that raised the event.
+     */
+    protected static function announce(DocumentStatusChanged $event) : void
+    {
+        try {
+            event($event);
+        }
+        catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * The model created event: a new row with a status is a change from nothing.
+     */
+    public function created($document)
+    {
+        if ($document->status) $this->changes()[$document] = [null, $document->status];
+    }
+
+    /**
+     * The model updated event (only fired when something was actually written).
+     */
+    public function updated($document)
+    {
+        if (! $document->wasChanged('status')) return;
+
+        $previous = data_get($document->getPrevious(), 'status');
+
+        $this->changes()[$document] = [
+            $previous instanceof Status ? $previous : Status::tryFrom((string) $previous),
+            $document->status,
+        ];
+    }
+
+    /**
      * The model saved event
      */
     public function saved($document)
+    {
+        $change = $this->changes()[$document] ?? null;
+        unset($this->changes()[$document]);
+
+        $this->syncParent($document);
+
+        // DocumentStatusChanged, from any code path, after the parent status is in place
+        if (! $change) return;
+
+        $event = new DocumentStatusChanged($document, ...$change);
+
+        if (static::$deferring) static::$deferred[] = $event;
+        else static::announce($event);
+    }
+
+    protected function changes() : \WeakMap
+    {
+        return static::$changes ??= new \WeakMap;
+    }
+
+    /**
+     * Write the row's status to its parent.
+     */
+    protected function syncParent($document) : void
     {
         $document = $document->fresh();
         $parent = $document->parent;
@@ -83,7 +191,8 @@ class MyinvoisDocumentObserver
     {
         $column = $document->is_preprod ? 'myinvois_preprod_status' : 'myinvois_status';
 
-        $parent->newQueryWithoutScopes()->whereKey($parent->getKey())->update([$column => $status]);
+        // toBase(): the Eloquent builder's update() would add updated_at to the statement
+        $parent->newQueryWithoutScopes()->whereKey($parent->getKey())->toBase()->update([$column => $status]);
 
         // Keep the in-memory instance consistent without marking it dirty.
         $parent->setAttribute($column, $status)->syncOriginalAttribute($column);
