@@ -588,6 +588,17 @@ class Myinvois
         // only a plain string is safe to show -- the body is not ours to trust
         if (!is_string($code) || $code === '') $code = null;
 
+        // unauthorized_client with an on-behalf-of TIN: the intermediary (client id) itself is fine,
+        // but LHDN does not know it as an intermediary for that taxpayer on this environment.
+        // The TIN is a business identifier, not a secret; never mention the client id / secret.
+        $onBehalfOf = $this->getSettings('on_behalf_of');
+
+        if ($code === 'unauthorized_client' && is_string($onBehalfOf) && $onBehalfOf !== '') {
+            $env = $this->getSettings('preprod') ? 'preprod' : 'production';
+
+            return "MyInvois says this intermediary (the Client ID) is not authorised to act on behalf of taxpayer TIN {$onBehalfOf} on the {$env} environment. The taxpayer may not be registered or linked to this intermediary on the {$env} environment, or the TIN is wrong.";
+        }
+
         return match ($code) {
             'invalid_client' => 'MyInvois rejected the API credentials. Check that the MyInvois Client ID and Client Secret are correct and match the selected environment (production vs sandbox).',
             default => 'MyInvois authentication failed'.($code ? " ($code)" : " (HTTP {$response->status()})").'. Please try again or contact support.',

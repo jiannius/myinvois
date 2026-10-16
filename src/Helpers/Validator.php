@@ -165,7 +165,9 @@ class Validator
     public function getBuyerRules()
     {
         $doctype = Code::documentTypes()->label(data_get($this->document, 'document_type'));
-        $tintype = TinType::tryFrom(data_get($this->document, 'buyer.tin'));
+        $buyerTin = data_get($this->document, 'buyer.tin');
+        // tryFrom() only takes string|int -- a missing TIN must not reach it (PHP 8.4 deprecation)
+        $tintype = is_string($buyerTin) && trim($buyerTin) !== '' ? TinType::tryFrom($buyerTin) : null;
         $isConsolidate = data_get($this->document, 'is_consolidate');
 
         if ($tintype) {

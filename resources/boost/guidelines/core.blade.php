@@ -129,7 +129,7 @@ Use `cancelDocument()` to retract a doc you issued; use `rejectDocument()` when 
 Every failure talking to MyInvois is a typed exception under `Jiannius\Myinvois\Exceptions`, all extending `MyinvoisException` (a `RuntimeException`). Catch the base type to show one message, or a subclass to react differently:
 
 - `MyinvoisUnavailableException` — network failure/timeout, HTTP 5xx or 429, a token 408/429, or an unusable token response. Transient: tell the user to try again later. For a network failure `getReason()` holds the connection error text (URL query strings stripped; the original exception is not chained, so `getPrevious()` is `null`); for a 429 `getRetryAfter()` may hold seconds.
-- `MyinvoisAuthenticationException` — OAuth token rejected (any 4xx from `/connect/token` except 408/429, e.g. wrong client id/secret or prod vs sandbox mismatch) or a 401 that persists after the SDK has discarded the cached token and retried once with a fresh one. Retrying won't help; fix the credentials.
+- `MyinvoisAuthenticationException` — OAuth token rejected (any 4xx from `/connect/token` except 408/429, e.g. wrong client id/secret or prod vs sandbox mismatch; `unauthorized_client` with an on-behalf-of TIN means the intermediary is not registered/linked for that taxpayer TIN on this environment, and the message says so) or a 401 that persists after the SDK has discarded the cached token and retried once with a fresh one. Retrying won't help; fix the credentials.
 - `MyinvoisPermissionException` — HTTP 403 (taxpayer/intermediary not permitted).
 - `MyinvoisInFlightException` — only from `forParents()` / `queueSubmission()`: the parent is locked by another submission, or its latest submission is already `submitted` / `valid`. Raised before anything is sent.
 

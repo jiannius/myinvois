@@ -305,6 +305,56 @@ class MyinvoisFailureTest extends TestCase
     }
 
     #[Test]
+    public function an_unauthorized_client_on_behalf_of_a_tin_names_the_tin_and_environment() : void
+    {
+        Http::fake(['*/connect/token' => Http::response(['error' => 'unauthorized_client'], 400)]);
+
+        foreach ([true => 'preprod', false => 'production'] as $preprod => $env) {
+            try {
+                $this->myinvois()->setPreprod((bool) $preprod)->setOnBehalfOf('C1234567890')->getToken();
+                $this->fail('Expected MyinvoisAuthenticationException.');
+            } catch (MyinvoisAuthenticationException $e) {
+                $this->assertSame(400, $e->getStatus());
+                $this->assertStringContainsString('not authorised to act on behalf of taxpayer TIN C1234567890', $e->getMessage());
+                $this->assertStringContainsString("on the $env environment", $e->getMessage());
+                $this->assertStringContainsString('registered or linked', $e->getMessage());
+                $this->assertStringNotContainsString('secret', $e->getMessage());
+                $this->assertStringNotContainsString('try again or contact support', $e->getMessage());
+                $this->assertSame(['error' => 'unauthorized_client'], $e->getResponseData());
+            }
+        }
+    }
+
+    #[Test]
+    public function an_unauthorized_client_without_on_behalf_of_keeps_the_generic_message() : void
+    {
+        Http::fake(['*/connect/token' => Http::response(['error' => 'unauthorized_client'], 400)]);
+
+        try {
+            $this->myinvois()->getToken();
+            $this->fail('Expected MyinvoisAuthenticationException.');
+        } catch (MyinvoisAuthenticationException $e) {
+            $this->assertStringContainsString('authentication failed (unauthorized_client)', $e->getMessage());
+            $this->assertStringContainsString('try again or contact support', $e->getMessage());
+            $this->assertStringNotContainsString('on behalf of', $e->getMessage());
+        }
+    }
+
+    #[Test]
+    public function a_different_token_error_on_behalf_of_a_tin_keeps_its_existing_message() : void
+    {
+        Http::fake(['*/connect/token' => Http::response(['error' => 'invalid_client'], 400)]);
+
+        try {
+            $this->myinvois()->setOnBehalfOf('C1234567890')->getToken();
+            $this->fail('Expected MyinvoisAuthenticationException.');
+        } catch (MyinvoisAuthenticationException $e) {
+            $this->assertStringContainsString('MyInvois rejected the API credentials', $e->getMessage());
+            $this->assertStringNotContainsString('on behalf of', $e->getMessage());
+        }
+    }
+
+    #[Test]
     public function a_token_4xx_with_a_non_json_body_does_not_crash() : void
     {
         Http::fake(['*/connect/token' => Http::response('<html>Forbidden</html>', 403)]);

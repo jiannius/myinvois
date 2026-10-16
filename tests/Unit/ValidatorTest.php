@@ -99,6 +99,45 @@ class ValidatorTest extends TestCase
     }
 
     #[Test]
+    public function a_null_or_blank_buyer_tin_does_not_raise_a_deprecation() : void
+    {
+        $deprecations = [];
+        set_error_handler(function ($no, $str) use (&$deprecations) {
+            $deprecations[] = $str;
+            return true;
+        }, E_DEPRECATED | E_USER_DEPRECATED);
+
+        try {
+            foreach ([null, ''] as $tin) {
+                $doc = DocumentFixture::invoice();
+                $doc['buyer']['tin'] = $tin;
+                $this->validate($doc)->passes();
+            }
+
+            $doc = DocumentFixture::invoice();
+            unset($doc['buyer']['tin']);
+            $this->validate($doc)->passes();
+        }
+        finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame([], $deprecations);
+    }
+
+    #[Test]
+    public function a_null_buyer_tin_still_fails_validation_as_before() : void
+    {
+        $doc = DocumentFixture::invoice();
+        $doc['buyer']['tin'] = null;
+
+        $v = $this->validate($doc);
+
+        $this->assertTrue($v->fails());
+        $this->assertTrue($v->errors()->has('buyer.tin'));
+    }
+
+    #[Test]
     public function general_public_tin_is_allowed_on_a_consolidated_document() : void
     {
         $doc = DocumentFixture::invoice(['is_consolidate' => true]);
