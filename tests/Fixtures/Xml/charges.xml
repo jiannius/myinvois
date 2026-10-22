@@ -1,0 +1,54 @@
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
+    <ID>INV-XML-2</ID>
+    <IssueDate>2026-02-01</IssueDate>
+    <IssueTime>08:00:00Z</IssueTime>
+    <InvoiceTypeCode listVersionID="1.1">01</InvoiceTypeCode>
+    <DocumentCurrencyCode>MYR</DocumentCurrencyCode>
+    <AllowanceCharge>
+        <ChargeIndicator>true</ChargeIndicator>
+        <AllowanceChargeReason>Shipping</AllowanceChargeReason>
+        <Amount currencyID="MYR">10</Amount>
+    </AllowanceCharge>
+    <AllowanceCharge>
+        <ChargeIndicator>false</ChargeIndicator>
+        <AllowanceChargeReason>Promo</AllowanceChargeReason>
+        <Amount currencyID="MYR">5</Amount>
+    </AllowanceCharge>
+    <PrepaidPayment>
+        <ID>PRE-1</ID>
+        <PaidAmount currencyID="MYR">20</PaidAmount>
+        <PaidDate>2026-01-15</PaidDate>
+    </PrepaidPayment>
+    <TaxTotal>
+        <TaxSubtotal>
+            <TaxableAmount currencyID="MYR">100</TaxableAmount>
+            <TaxAmount currencyID="MYR">6</TaxAmount>
+            <Percent>6</Percent>
+            <TaxCategory>
+                <ID schemeID="UN/ECE 5305" schemeAgencyID="6">01</ID>
+            </TaxCategory>
+        </TaxSubtotal>
+    </TaxTotal>
+    <AccountingSupplierParty>
+        <AdditionalAccountID schemeAgencyName="CertEX">CPT-CCN-W-211111-KL-000002</AdditionalAccountID>
+        <Party>
+            <PartyLegalEntity><RegistrationName>XML Supplier</RegistrationName></PartyLegalEntity>
+            <PartyIdentification><ID schemeID="TIN">C111</ID></PartyIdentification>
+        </Party>
+    </AccountingSupplierParty>
+    <AccountingCustomerParty>
+        <Party>
+            <PartyLegalEntity><RegistrationName>XML Buyer</RegistrationName></PartyLegalEntity>
+            <PartyIdentification><ID schemeID="TIN">C222</ID></PartyIdentification>
+        </Party>
+    </AccountingCustomerParty>
+    <InvoiceLine>
+        <ID>1</ID>
+        <InvoicedQuantity unitCode="C62">2</InvoicedQuantity>
+        <Item>
+            <Description>XML Item</Description>
+            <OriginCountry><IdentificationCode listID="ISO3166-1">MYS</IdentificationCode></OriginCountry>
+        </Item>
+        <Price><PriceAmount currencyID="MYR">50</PriceAmount></Price>
+    </InvoiceLine>
+</Invoice>

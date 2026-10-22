@@ -1,0 +1,22 @@
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+    <cbc:ID>INV-EDGE-1</cbc:ID>
+    <cbc:Note>  padded text  </cbc:Note>
+    <cbc:Note><![CDATA[Fish & Chips <deluxe>]]></cbc:Note>
+    <cbc:Code>007</cbc:Code>
+    <cbc:Zero>0</cbc:Zero>
+    <cbc:Decimal>12.50</cbc:Decimal>
+    <cbc:Negative>-3</cbc:Negative>
+    <cbc:Flag>TRUE</cbc:Flag>
+    <cbc:Off>false</cbc:Off>
+    <cbc:Empty/>
+    <cbc:EmptyWithAttribute currencyID="MYR"/>
+    <cbc:Amount currencyID="MYR">0.00</cbc:Amount>
+    <cbc:Unicode>Kedai Kopi 咖啡店 — café</cbc:Unicode>
+    <cac:Party>
+        <cbc:Name>Mixed <cbc:Inner>child</cbc:Inner></cbc:Name>
+        <cac:PartyIdentification><cbc:ID schemeID="TIN">C111</cbc:ID></cac:PartyIdentification>
+        <cac:PartyIdentification><cbc:ID schemeID="BRN">B111</cbc:ID></cac:PartyIdentification>
+        <cac:PartyIdentification><cbc:ID schemeID="SST">NA</cbc:ID></cac:PartyIdentification>
+    </cac:Party>
+    <cac:Single><cbc:Only>1</cbc:Only></cac:Single>
+</Invoice>

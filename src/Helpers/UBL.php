@@ -2,8 +2,6 @@
 
 namespace Jiannius\Myinvois\Helpers;
 
-use Noki\XmlConverter\Convert;
-
 class UBL
 {
     /**
@@ -605,7 +603,7 @@ class UBL
     public static function restore($raw)
     {
         return str($raw)->startsWith('<Invoice ')
-            ? self::restoreXml(Convert::xmlToArray($raw))
+            ? self::restoreXml(Xml::toArray($raw))
             : self::restoreJson(json_decode($raw, true));
     }
 

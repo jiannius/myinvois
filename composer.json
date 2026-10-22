@@ -4,6 +4,8 @@
     "type": "library",
     "require": {
         "php": "^8.3",
+        "ext-libxml": "*",
+        "ext-simplexml": "*",
         "illuminate/support": "^13.0",
         "illuminate/database": "^13.0",
         "illuminate/http": "^13.0",
@@ -11,7 +13,6 @@
         "illuminate/queue": "^13.0",
         "illuminate/console": "^13.0",
         "symfony/http-client": "^7.0",
-        "noki/laravel-xml-converter": "^1.0",
         "simplesoftwareio/simple-qrcode": "^4.2"
     },
     "require-dev": {

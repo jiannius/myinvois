@@ -1,0 +1,81 @@
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
+    <ID>INV-XML-3</ID>
+    <IssueDate>2026-03-01</IssueDate>
+    <IssueTime>08:00:00Z</IssueTime>
+    <InvoiceTypeCode listVersionID="1.1">01</InvoiceTypeCode>
+    <DocumentCurrencyCode listID="ISO 4217">MYR</DocumentCurrencyCode>
+    <InvoicePeriod>
+        <Description languageID="en">Monthly</Description>
+    </InvoicePeriod>
+    <BillingReference>
+        <InvoiceDocumentReference>
+            <ID schemeID="ORIG">ORIG-INV-1</ID>
+        </InvoiceDocumentReference>
+        <AdditionalDocumentReference>
+            <ID schemeID="CUS">BILL-REF-1</ID>
+        </AdditionalDocumentReference>
+    </BillingReference>
+    <AdditionalDocumentReference>
+        <ID schemeID="CustomsImportForm">CUSTOMS-1</ID>
+        <DocumentType>CustomsImportForm</DocumentType>
+        <DocumentDescription>Customs import form</DocumentDescription>
+    </AdditionalDocumentReference>
+    <PaymentMeans>
+        <PaymentMeansCode listID="UN/ECE 4461">03</PaymentMeansCode>
+    </PaymentMeans>
+    <PaymentTerms>
+        <Note languageID="en">Payment due in 30 days</Note>
+    </PaymentTerms>
+    <AllowanceCharge>
+        <ChargeIndicator>true</ChargeIndicator>
+        <AllowanceChargeReason languageID="en">Shipping</AllowanceChargeReason>
+        <Amount currencyID="MYR">10</Amount>
+    </AllowanceCharge>
+    <TaxTotal>
+        <TaxSubtotal>
+            <TaxableAmount currencyID="MYR">100</TaxableAmount>
+            <TaxAmount currencyID="MYR">0</TaxAmount>
+            <TaxCategory>
+                <ID schemeID="UN/ECE 5305">E</ID>
+                <TaxExemptionReason languageID="en">Exempt under Schedule A</TaxExemptionReason>
+            </TaxCategory>
+        </TaxSubtotal>
+    </TaxTotal>
+    <AccountingSupplierParty>
+        <Party>
+            <PartyLegalEntity><RegistrationName>XML Supplier</RegistrationName></PartyLegalEntity>
+            <PartyIdentification><ID schemeID="TIN">C111</ID></PartyIdentification>
+            <PostalAddress>
+                <CountrySubentityCode listName="State">01</CountrySubentityCode>
+            </PostalAddress>
+        </Party>
+    </AccountingSupplierParty>
+    <AccountingCustomerParty>
+        <Party>
+            <PartyLegalEntity><RegistrationName>XML Buyer</RegistrationName></PartyLegalEntity>
+            <PartyIdentification><ID schemeID="TIN">C222</ID></PartyIdentification>
+        </Party>
+    </AccountingCustomerParty>
+    <InvoiceLine>
+        <ID>1</ID>
+        <InvoicedQuantity unitCode="C62">1</InvoicedQuantity>
+        <Item>
+            <Description languageID="en">XML Item</Description>
+        </Item>
+        <Price><PriceAmount currencyID="MYR">100</PriceAmount></Price>
+        <AllowanceCharge>
+            <AllowanceChargeReason languageID="en">Line discount</AllowanceChargeReason>
+            <Amount currencyID="MYR">2</Amount>
+        </AllowanceCharge>
+        <TaxTotal>
+            <TaxSubtotal>
+                <TaxableAmount currencyID="MYR">100</TaxableAmount>
+                <TaxAmount currencyID="MYR">0</TaxAmount>
+                <TaxCategory>
+                    <ID schemeID="UN/ECE 5305">E</ID>
+                    <TaxExemptionReason languageID="en">Line exempt reason</TaxExemptionReason>
+                </TaxCategory>
+            </TaxSubtotal>
+        </TaxTotal>
+    </InvoiceLine>
+</Invoice>
