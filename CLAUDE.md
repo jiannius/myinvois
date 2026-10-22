@@ -60,7 +60,9 @@ All additive: plain `submitDocuments()` behaves as before. Design decisions are 
 
 ## UBL builder conventions
 
-`UBL.php` uses `data_set($schema, 'Invoice.0.X.0._', $value)` heavily. The `.0.` indexes and trailing `._` value keys come from the `Noki\XmlConverter\Convert` JSON↔XML format — they're load-bearing, not arbitrary. When adding fields, follow the existing dotted paths exactly.
+`UBL.php` uses `data_set($schema, 'Invoice.0.X.0._', $value)` heavily. The `.0.` indexes and trailing `._` value keys come from the UBL JSON representation MyInvois expects — they're load-bearing, not arbitrary. When adding fields, follow the existing dotted paths exactly.
+
+XML input (`UBL::restore()` on a string starting `<Invoice `) is parsed by `Helpers/Xml::toArray()` into a different shape (local names, `@attributes`/`value`, single-item lists collapsed, numeric/boolean text cast) that `restoreXml()` reads. It is a port of `noki/laravel-xml-converter`'s `Convert::xmlToArray()`, dropped in v1.5.1 because that package's auto-discovered provider called `Storage::exists()` on the host's default disk on every boot (a remote request on S3). Keep the output identical: `tests/Unit/XmlTest.php` compares it strictly against noki's captured output in `tests/Fixtures/Xml/`. `BootDefaultDiskTest` boots with every runtime dependency's discovered providers and a default disk that throws, so a new dependency that touches the disk at boot fails the suite.
 
 TIN handling: `getDocumentTINSubschema()` maps the flat `tin`/`brn`/`nric`/`passport`/`army` keys to UBL's `PartyIdentification` entries. `Enums/TinType.php` defines the special general-public / foreign / government TINs used when a buyer has no real TIN.
 

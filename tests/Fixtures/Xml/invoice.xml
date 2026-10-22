@@ -1,0 +1,41 @@
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
+    <ID>INV-XML-1</ID>
+    <IssueDate>2026-02-01</IssueDate>
+    <IssueTime>08:00:00Z</IssueTime>
+    <InvoiceTypeCode listVersionID="1.1">01</InvoiceTypeCode>
+    <DocumentCurrencyCode>MYR</DocumentCurrencyCode>
+    <PaymentMeans>
+        <PaymentMeansCode>03</PaymentMeansCode>
+    </PaymentMeans>
+    <AccountingSupplierParty>
+        <Party>
+            <PartyLegalEntity><RegistrationName>XML Supplier</RegistrationName></PartyLegalEntity>
+            <PartyIdentification><ID schemeID="TIN">C111</ID></PartyIdentification>
+            <PartyIdentification><ID schemeID="BRN">B111</ID></PartyIdentification>
+        </Party>
+    </AccountingSupplierParty>
+    <AccountingCustomerParty>
+        <Party>
+            <PartyLegalEntity><RegistrationName>XML Buyer</RegistrationName></PartyLegalEntity>
+            <PartyIdentification><ID schemeID="TIN">C222</ID></PartyIdentification>
+            <PartyIdentification><ID schemeID="BRN">B222</ID></PartyIdentification>
+        </Party>
+    </AccountingCustomerParty>
+    <LegalMonetaryTotal>
+        <TaxExclusiveAmount currencyID="MYR">100</TaxExclusiveAmount>
+        <TaxInclusiveAmount currencyID="MYR">106</TaxInclusiveAmount>
+        <PayableAmount currencyID="MYR">106</PayableAmount>
+    </LegalMonetaryTotal>
+    <InvoiceLine>
+        <ID>1</ID>
+        <InvoicedQuantity unitCode="C62">2</InvoicedQuantity>
+        <Item>
+            <Description>XML Item</Description>
+            <CommodityClassification>
+                <ItemClassificationCode listID="CLASS">022</ItemClassificationCode>
+            </CommodityClassification>
+        </Item>
+        <Price><PriceAmount currencyID="MYR">50</PriceAmount></Price>
+        <ItemPriceExtension><Amount currencyID="MYR">100</Amount></ItemPriceExtension>
+    </InvoiceLine>
+</Invoice>

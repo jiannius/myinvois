@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "8b7655bae144d02584d59b3e376ee07a",
+    "content-hash": "6c51810fca2c812a1fb1447ef7f3b6ba",
     "packages": [
         {
             "name": "bacon/bacon-qr-code",
@@ -2425,71 +2425,6 @@
                 "source": "https://github.com/nette/utils/tree/v4.1.4"
             },
             "time": "2026-05-11T20:49:54+00:00"
-        },
-        {
-            "name": "noki/laravel-xml-converter",
-            "version": "v1.0.3",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/novakurosevic/laravel-xml-converter.git",
-                "reference": "8165703f27f8b27e04653ce049ee7b9086e16982"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/novakurosevic/laravel-xml-converter/zipball/8165703f27f8b27e04653ce049ee7b9086e16982",
-                "reference": "8165703f27f8b27e04653ce049ee7b9086e16982",
-                "shasum": ""
-            },
-            "require": {
-                "ext-dom": "*",
-                "ext-libxml": "*",
-                "ext-simplexml": "*",
-                "php": "^8.0"
-            },
-            "type": "library",
-            "extra": {
-                "laravel": {
-                    "aliases": {
-                        "Convert": "Noki\\XmlConverter\\Facades\\Convert"
-                    },
-                    "providers": [
-                        "Noki\\XmlConverter\\XmlConverterServiceProvider"
-                    ]
-                }
-            },
-            "autoload": {
-                "psr-4": {
-                    "Noki\\XmlConverter\\": "src/"
-                }
-            },
-            "notification-url": "https://packagist.org/downloads/",
-            "license": [
-                "MIT"
-            ],
-            "authors": [
-                {
-                    "name": "Novak Urosevic",
-                    "role": "Developer"
-                },
-                {
-                    "name": "ChatGpt",
-                    "role": "Developer"
-                }
-            ],
-            "description": "Laravel XML Converter is Laravel package for converting XML to JSON and XML to array.",
-            "homepage": "https://github.com/novakurosevic/laravel-xml-converter",
-            "keywords": [
-                "Laravel XML Converter",
-                "XMLtoJSON",
-                "laravel",
-                "noki",
-                "xmltoarray"
-            ],
-            "support": {
-                "issues": "https://github.com/novakurosevic/laravel-xml-converter/issues",
-                "source": "https://github.com/novakurosevic/laravel-xml-converter/tree/v1.0.3"
-            },
-            "time": "2025-09-18T15:44:19+00:00"
         },
         {
             "name": "nunomaduro/termwind",
@@ -9282,7 +9217,9 @@
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {
-        "php": "^8.3"
+        "php": "^8.3",
+        "ext-libxml": "*",
+        "ext-simplexml": "*"
     },
     "platform-dev": {},
     "plugin-api-version": "2.9.0"

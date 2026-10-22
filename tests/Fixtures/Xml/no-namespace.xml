@@ -1,0 +1,6 @@
+<Invoice version="2.1">
+    <ID>INV-PLAIN-1</ID>
+    <Line><Qty>1</Qty></Line>
+    <Line><Qty>2.5</Qty></Line>
+    <Text>text</Text>
+</Invoice>
