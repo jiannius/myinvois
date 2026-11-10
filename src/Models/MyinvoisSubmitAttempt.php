@@ -37,6 +37,12 @@ class MyinvoisSubmitAttempt extends Model
 
     public const NOT_FOUND = 'not_found';
 
+    /**
+     * Closed by hand (Myinvois::releasePendingAttempts()) after a person checked the MyInvois
+     * portal. Unlike NOT_FOUND it never lends its issue time to a resend.
+     */
+    public const RELEASED = 'released';
+
     protected $table = 'myinvois_submit_attempts';
 
     protected $guarded = [];
@@ -56,6 +62,7 @@ class MyinvoisSubmitAttempt extends Model
         'is_consolidate' => 'boolean',
         'row_numbers' => 'array',
         'closed_at' => 'datetime',
+        'meta' => 'array',
     ];
 
     public function parent() : MorphTo

@@ -46,7 +46,7 @@ class SubmitAttempts
     /** Minutes during which a resend reuses the attempt's issue time (LHDN's DV302 window is 2 hours). */
     public const REUSE_MINUTES = 120;
 
-    /** documents/recent pages read per document type, and their size. */
+    /** documents/recent pages read per document type (default; see lookupPages()), and their size. */
     public const LOOKUP_PAGES = 5;
 
     public const PAGE_SIZE = 100;
@@ -60,6 +60,8 @@ class SubmitAttempts
     public const CHECK_SLACK = 5;
 
     protected static bool $available = false;
+
+    protected static bool $hasMeta = false;
 
     /**
      * Submissions restored by the last recover(): submission uid => document numbers.
@@ -84,6 +86,44 @@ class SubmitAttempts
     public static function pendingFor(Model $parent, bool $preprod) : bool
     {
         return static::available() && MyinvoisSubmitAttempt::query()->pending()->forParent($parent, $preprod)->exists();
+    }
+
+    /**
+     * Pages of documents/recent read per document type: `services.myinvois.lookup_pages`, else
+     * LOOKUP_PAGES. More pages than that refuse the lookup (lookup_failed).
+     */
+    public static function lookupPages() : int
+    {
+        $pages = config('services.myinvois.lookup_pages');
+
+        return is_numeric($pages) && (int) $pages > 0 ? (int) $pages : static::LOOKUP_PAGES;
+    }
+
+    /**
+     * Close every pending attempt of a parent in an environment as RELEASED, after a person
+     * checked the MyInvois portal. $meta (e.g. user_id, reason) is stored with released_at
+     * when the meta column exists (migration 004). Returns how many were closed.
+     *
+     * The caller holds the parent's submission lock (Myinvois::releasePendingAttempts()).
+     */
+    public static function release(Model $parent, bool $preprod, array $meta = []) : int
+    {
+        if (! static::available()) return 0;
+
+        $attributes = static::hasMeta() ? ['meta' => [...$meta, 'released_at' => now()->toIso8601String()]] : [];
+
+        return (new MyinvoisSubmitAttempt)->getConnection()->transaction(function () use ($parent, $preprod, $attributes) {
+            $attempts = MyinvoisSubmitAttempt::query()->pending()->forParent($parent, $preprod)->lockForUpdate()->get();
+
+            foreach ($attempts as $attempt) $attempt->close(MyinvoisSubmitAttempt::RELEASED, $attributes);
+
+            return $attempts->count();
+        });
+    }
+
+    protected static function hasMeta() : bool
+    {
+        return static::$hasMeta = static::$hasMeta || Schema::connection((new MyinvoisSubmitAttempt)->getConnectionName())->hasColumn('myinvois_submit_attempts', 'meta');
     }
 
     // ---- recording -----------------------------------------------------
@@ -473,7 +513,7 @@ class SubmitAttempts
         $to = $last->copy()->addMinutes(static::WINDOW_AFTER)->min(now());
         $entries = collect();
 
-        for ($page = 1; $page <= static::LOOKUP_PAGES; $page++) {
+        for ($page = 1; $page <= static::lookupPages(); $page++) {
             $api = $this->client->callApi(
                 uri: 'documents/recent',
                 data: array_filter([
@@ -500,7 +540,7 @@ class SubmitAttempts
         }
 
         // more pages than we read: what we did not see could hold the match
-        throw new LookupFailed('documents/recent has more pages than the lookup reads.');
+        throw new LookupFailed('documents/recent has more pages than the lookup reads (services.myinvois.lookup_pages).');
     }
 
     /**
@@ -619,7 +659,8 @@ class SubmitAttempts
 
     /**
      * A document resent within REUSE_MINUTES of an attempt that found nothing on LHDN keeps
-     * that attempt's issue time.
+     * that attempt's issue time. Only when that is the latest attempt: one released by hand
+     * after it (RELEASED) means a person checked the portal, so the resend gets a fresh time.
      *
      * @param  array<int, array>  $documents
      * @return array<int, array>
