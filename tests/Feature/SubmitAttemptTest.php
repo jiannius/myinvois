@@ -654,19 +654,238 @@ class SubmitAttemptTest extends TestCase
     }
 
     #[Test]
-    public function the_job_reports_a_young_pending_attempt_as_pending() : void
+    public function the_job_waits_out_a_young_pending_attempt_instead_of_failing() : void
     {
         Event::fake([SubmissionAccepted::class, SubmissionFailed::class]);
         $order = OrgOrder::create();
         $this->pendingAttempt($order);
         $this->travel(2)->minutes();
 
-        $this->queuedJob($order)->handle();
+        $job = $this->queuedJob($order);
+        $job->handle();
 
-        Event::assertDispatched(SubmissionFailed::class, fn ($e) => $e->reason === SubmissionFailed::PENDING
-            && $e->parents === [['type' => OrgOrder::class, 'id' => $order->id]]);
+        // released until the attempt is 10 minutes old (8 minutes left), plus a little
+        $job->assertReleased(485);
+        Event::assertNotDispatched(SubmissionFailed::class);
         Event::assertNotDispatched(SubmissionAccepted::class);
         $this->assertSame(0, $this->posts());
+    }
+
+    #[Test]
+    public function the_job_retries_a_failed_lookup_three_times_then_reports_pending() : void
+    {
+        Event::fake([SubmissionAccepted::class, SubmissionFailed::class]);
+        $order = OrgOrder::create();
+        $this->pendingAttempt($order);
+        $this->travel(15)->minutes();
+        $this->recent = fn () => Http::response([], 500);
+
+        $job = $this->queuedJob($order);
+
+        foreach ([30, 60, 120] as $delay) {
+            $job->handle();
+            $job->assertReleased($delay);
+            $job->withFakeQueueInteractions();
+            Event::assertNotDispatched(SubmissionFailed::class);
+        }
+
+        $job->handle();
+
+        $job->assertNotReleased();
+        Event::assertDispatched(SubmissionFailed::class, fn ($e) => $e->reason === SubmissionFailed::PENDING
+            && $e->parents === [['type' => OrgOrder::class, 'id' => $order->id]]);
+        $this->assertSame(0, $this->posts());
+    }
+
+    // ---- batches (review of #14) ---------------------------------------
+
+    /** Time out one POST of two invoices, INV-0001 for $a and INV-0002 for $b. */
+    protected function batchTimedOut(Order $a, Order $b) : void
+    {
+        $this->post = fn () => throw new ConnectionException('timed out');
+
+        try {
+            $this->myinvois()->forParents(['INV-0001' => $a, 'INV-0002' => $b])
+                ->submitDocuments([DocumentFixture::invoice(), DocumentFixture::invoice(['number' => 'INV-0002'])]);
+            $this->fail('Expected the timeout.');
+        }
+        catch (MyinvoisUnavailableException) {
+        }
+
+        $this->post = fn () => $this->fail('Nothing may be POSTed.');
+    }
+
+    #[Test]
+    public function a_refusal_in_a_batch_changes_nothing_for_the_other_documents() : void
+    {
+        $a = Order::create();
+        $b = Order::create();
+        $this->timedOut($a);
+
+        $this->travel(5)->minutes();
+        MyinvoisSubmitAttempt::create([
+            'parent_type' => $b->getMorphClass(), 'parent_id' => $b->getKey(), 'is_preprod' => false,
+            'document_number' => 'INV-0002', 'document_type' => '01', 'issued_at' => '2026-01-15T09:30:00Z',
+            'status' => MyinvoisSubmitAttempt::PENDING,
+        ]);
+
+        // INV-0001 is adoptable, INV-0002 is still being checked
+        $this->travel(7)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry()]);
+
+        try {
+            $this->myinvois()->forParents(['INV-0001' => $a, 'INV-0002' => $b])
+                ->submitDocuments([DocumentFixture::invoice(), DocumentFixture::invoice(['number' => 'INV-0002'])]);
+            $this->fail('Expected a refusal.');
+        }
+        catch (MyinvoisPendingAttemptException $e) {
+            $this->assertSame(MyinvoisPendingAttemptException::STILL_CHECKING, $e->getReason());
+            $this->assertSame(['INV-0002'], $e->getDocumentNumbers());
+        }
+
+        $this->assertSame(0, MyinvoisDocument::count(), 'nothing adopted while another document refuses');
+        $this->assertTrue(Myinvois::hasPendingAttempt($a));
+    }
+
+    #[Test]
+    public function a_recovered_document_is_dropped_and_the_rest_of_the_batch_is_sent() : void
+    {
+        $a = Order::create();
+        $b = Order::create();
+        $this->timedOut($a);
+        $this->travel(6)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry()]);
+        $this->post = fn () => $this->accepted('UID2', 'INV-0002', 'SUB2');
+
+        $client = $this->myinvois();
+        $result = $client->forParents(['INV-0001' => $a, 'INV-0002' => $b])->withoutPolling()
+            ->submitDocuments([DocumentFixture::invoice(), DocumentFixture::invoice(['number' => 'INV-0002'])]);
+
+        $posted = Http::recorded(fn ($request) => $request->method() === 'POST' && str_contains($request->url(), 'documentsubmissions'))->last()[0];
+        $this->assertSame(['INV-0002'], collect($posted['documents'])->pluck('codeNumber')->all());
+
+        $this->assertSame(['SUBX' => ['INV-0001']], $client->recoveredSubmissions());
+        $this->assertSame(['UID2'], $result['myinvois_documents']->pluck('document_uuid')->all());
+        $this->assertSame($a->id, MyinvoisDocument::where('document_uuid', 'UIDX')->value('parent_id'));
+        $this->assertSame($b->id, MyinvoisDocument::where('document_uuid', 'UID2')->value('parent_id'));
+    }
+
+    #[Test]
+    public function one_lookup_covers_every_pending_document_of_a_type() : void
+    {
+        $a = Order::create();
+        $b = Order::create();
+        $this->batchTimedOut($a, $b);
+        $this->travel(6)->minutes();
+        $this->recent = fn () => $this->recentPage([
+            $this->entry(),
+            $this->entry(['uuid' => 'UIDY', 'internalId' => 'INV-0002']),
+        ]);
+
+        try {
+            $this->myinvois()->forParents(['INV-0001' => $a, 'INV-0002' => $b])
+                ->submitDocuments([DocumentFixture::invoice(), DocumentFixture::invoice(['number' => 'INV-0002'])]);
+            $this->fail('Expected recovery.');
+        }
+        catch (MyinvoisPendingAttemptException $e) {
+            $this->assertSame(MyinvoisPendingAttemptException::RECOVERED, $e->getReason());
+            $this->assertSame(['INV-0001', 'INV-0002'], $e->getDocumentNumbers());
+        }
+
+        $this->assertSame(1, $this->recentCalls());
+        $this->assertSame(2, MyinvoisDocument::count());
+    }
+
+    #[Test]
+    public function the_job_announces_the_recovered_and_the_sent_documents_of_one_batch() : void
+    {
+        Event::fake([SubmissionAccepted::class, SubmissionFailed::class]);
+        $a = OrgOrder::create();
+        $b = OrgOrder::create();
+        $this->pendingAttempt($a);
+        $this->travel(2)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry(['status' => 'Submitted'])]);
+        $this->post = fn () => $this->accepted('UID2', 'INV-0002', 'SUB2');
+
+        Queue::fake();
+        Myinvois::queueSubmission([DocumentFixture::invoice(), DocumentFixture::invoice(['number' => 'INV-0002'])], ['INV-0001' => $a, 'INV-0002' => $b]);
+        $job = Queue::pushed(SubmitDocuments::class)->first();
+        $job->withFakeQueueInteractions();
+        Queue::fake();
+
+        $job->handle();
+
+        Event::assertDispatched(SubmissionAccepted::class, fn ($e) => $e->submissionUid === 'SUBX' && $e->documentNumbers === ['INV-0001']);
+        Event::assertDispatched(SubmissionAccepted::class, fn ($e) => $e->submissionUid === 'SUB2' && $e->documentNumbers === ['INV-0002']);
+        Event::assertNotDispatched(SubmissionFailed::class);
+        Queue::assertPushed(PollSubmission::class, 2);
+    }
+
+    // ---- idempotence and windows (review of #14) ------------------------
+
+    #[Test]
+    public function adopting_a_document_whose_row_already_exists_links_it_instead_of_duplicating() : void
+    {
+        $order = Order::create();
+
+        // saved (unlinked) just before the attempt was recorded: outside the local window
+        MyinvoisDocument::create(['document_uuid' => 'UIDX', 'submission_uid' => 'SUBX', 'document_number' => 'INV-0001', 'status' => 'valid', 'is_preprod' => false]);
+        $this->travel(1)->seconds();
+        $this->timedOut($order);
+        $this->travel(6)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry()]);
+
+        $e = $this->resubmit($order);
+
+        $this->assertSame(MyinvoisPendingAttemptException::RECOVERED, $e->getReason());
+        $this->assertSame($order->id, MyinvoisDocument::sole()->parent_id);
+    }
+
+    #[Test]
+    public function the_lookup_window_starts_at_the_first_attempt_that_used_the_issue_time() : void
+    {
+        $order = Order::create();
+        $this->timedOut($order);
+
+        // 10:15: nothing found, resent with the same issue time, and that times out too
+        $this->travel(15)->minutes();
+        $this->post = fn () => throw new ConnectionException('timed out');
+
+        try {
+            $this->myinvois()->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice(['issued_at' => '2026-11-10 10:15:00'])]);
+        }
+        catch (MyinvoisUnavailableException) {
+        }
+
+        $this->post = fn () => $this->fail('Nothing may be POSTed.');
+        $this->travel(6)->minutes();
+
+        $e = $this->resubmit($order);
+
+        $this->assertSame(MyinvoisPendingAttemptException::STILL_CHECKING, $e->getReason());
+        $query = Http::recorded(fn ($request) => str_contains($request->url(), 'documents/recent'))->last()[0]->data();
+        $this->assertSame('2026-11-10T09:55:00Z', $query['submissionDateFrom'], 'the original may have landed late');
+    }
+
+    #[Test]
+    public function a_408_on_the_post_leaves_the_attempt_pending() : void
+    {
+        $order = Order::create();
+        $this->post = fn () => Http::response([], 408);
+
+        $this->myinvois()->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice()]);
+
+        $this->assertTrue(Myinvois::hasPendingAttempt($order));
+    }
+
+    #[Test]
+    public function attempts_can_use_their_own_connection() : void
+    {
+        $this->assertSame('testing', (new MyinvoisSubmitAttempt)->getConnectionName() ?? config('database.default'));
+
+        config(['services.myinvois.attempts_connection' => 'attempts']);
+
+        $this->assertSame('attempts', (new MyinvoisSubmitAttempt)->getConnectionName());
     }
 
     #[Test]
