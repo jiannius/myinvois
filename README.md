@@ -332,7 +332,7 @@ Notes:
 - A plain `submitDocuments()` without parents records no attempt.
 - Don't call `submitDocuments()` inside a database transaction you might roll back: the attempt row would roll back with it. If you must, set `services.myinvois.attempts_connection` to a second connection to the same database, so attempts are written outside your transaction.
 - `MyinvoisFake` records no attempts (it cannot time out).
-- The lookup has not yet been run against LHDN (preprod included); see `docs/lhdn-references.md` for the assumptions it rests on.
+- The lookup and the DV302 safety net were confirmed on LHDN preprod on 2026-11-10; see `docs/lhdn-references.md` for what was and wasn't exercised.
 
 ## Status sync
 
