@@ -49,6 +49,13 @@ class SubmitAttempts
     /** documents/recent pages read per document type (default; see lookupPages()), and their size. */
     public const LOOKUP_PAGES = 5;
 
+    /**
+     * The most lookup_pages may ask for: documents/recent allows 12 requests a minute per client
+     * id, and a queued job never sleeps on the limiter but restarts the lookup from page 1, so a
+     * longer lookup could never finish (and in a sync call would sleep while holding the lock).
+     */
+    public const LOOKUP_PAGES_MAX = 12;
+
     public const PAGE_SIZE = 100;
 
     /** The submission window searched, in minutes before the first and after the last attempt. */
@@ -90,19 +97,21 @@ class SubmitAttempts
 
     /**
      * Pages of documents/recent read per document type: `services.myinvois.lookup_pages`, else
-     * LOOKUP_PAGES. More pages than that refuse the lookup (lookup_failed).
+     * LOOKUP_PAGES, at most LOOKUP_PAGES_MAX. More pages than that refuse the lookup
+     * (lookup_failed).
      */
     public static function lookupPages() : int
     {
         $pages = config('services.myinvois.lookup_pages');
 
-        return is_numeric($pages) && (int) $pages > 0 ? (int) $pages : static::LOOKUP_PAGES;
+        return is_numeric($pages) && (int) $pages > 0 ? min((int) $pages, static::LOOKUP_PAGES_MAX) : static::LOOKUP_PAGES;
     }
 
     /**
      * Close every pending attempt of a parent in an environment as RELEASED, after a person
      * checked the MyInvois portal. $meta (e.g. user_id, reason) is stored with released_at
-     * when the meta column exists (migration 004). Returns how many were closed.
+     * (a reserved key) when the meta column exists (migration 004; without it the meta is
+     * logged instead). Returns how many were closed.
      *
      * The caller holds the parent's submission lock (Myinvois::releasePendingAttempts()).
      */
@@ -110,14 +119,21 @@ class SubmitAttempts
     {
         if (! static::available()) return 0;
 
-        $attributes = static::hasMeta() ? ['meta' => [...$meta, 'released_at' => now()->toIso8601String()]] : [];
+        $meta = [...$meta, 'released_at' => now()->toIso8601String()];
+        $attributes = static::hasMeta() ? ['meta' => $meta] : [];
+
+        if (! $attributes) {
+            \Illuminate\Support\Facades\Log::warning('MyInvois: pending attempts released without the meta column (run migration 004); the release meta is not stored.', [
+                'parent_type' => $parent->getMorphClass(),
+                'parent_id' => (string) $parent->getKey(),
+                'meta' => $meta,
+            ]);
+        }
 
         return (new MyinvoisSubmitAttempt)->getConnection()->transaction(function () use ($parent, $preprod, $attributes) {
             $attempts = MyinvoisSubmitAttempt::query()->pending()->forParent($parent, $preprod)->lockForUpdate()->get();
 
-            foreach ($attempts as $attempt) $attempt->close(MyinvoisSubmitAttempt::RELEASED, $attributes);
-
-            return $attempts->count();
+            return $attempts->filter(fn ($attempt) => $attempt->close(MyinvoisSubmitAttempt::RELEASED, $attributes))->count();
         });
     }
 

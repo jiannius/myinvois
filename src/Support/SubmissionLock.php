@@ -5,6 +5,7 @@ namespace Jiannius\Myinvois\Support;
 use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Sleep;
 use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Exceptions\MyinvoisInFlightException;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
@@ -20,6 +21,15 @@ use Jiannius\Myinvois\Models\MyinvoisDocument;
 class SubmissionLock
 {
     public const DEFAULT_SECONDS = 300;
+
+    /**
+     * ensure() re-taking a lapsed lock waits this many times RETAKE_SLEEP_MS for a holder that
+     * keeps it only for a moment (Myinvois::releasePendingAttempts()), so a queued job waiting
+     * out a pending attempt is not failed as in flight by the admin action meant to unblock it.
+     */
+    public const RETAKE_TRIES = 10;
+
+    public const RETAKE_SLEEP_MS = 200;
 
     /**
      * Seconds a lock lives if nothing releases it.
@@ -80,7 +90,7 @@ class SubmissionLock
         foreach (static::unique($parents, $preprod) as $key => $parent) {
             if (static::store()->restoreLock($key, $owner)->isOwnedByCurrentProcess()) continue;
 
-            if (! static::store()->lock($key, static::seconds(), $owner)->get()) {
+            if (! static::retake($key, $owner)) {
                 throw static::inFlight('This document is already being submitted to MyInvois. Please wait for it to finish.', $parent);
             }
         }
@@ -128,6 +138,21 @@ class SubmissionLock
                     $parent,
                 );
             }
+        }
+    }
+
+    /**
+     * Take a lapsed lock back, waiting briefly (a bounded number of tries, not the clock, so it
+     * cannot spin under a frozen test clock) while someone else holds it.
+     */
+    protected static function retake(string $key, string $owner) : bool
+    {
+        for ($try = 0; ; $try++) {
+            if (static::store()->lock($key, static::seconds(), $owner)->get()) return true;
+
+            if ($try >= static::RETAKE_TRIES) return false;
+
+            Sleep::usleep(static::RETAKE_SLEEP_MS * 1000);
         }
     }
 

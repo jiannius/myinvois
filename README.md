@@ -63,7 +63,7 @@ Add a `myinvois` section to `config/services.php`:
     'lock_seconds' => 300,                                  // lock TTL
     'sync_schedule' => null,                                // null = off; 'hourly' or a cron expression to schedule myinvois:sync
     'sync_limit' => 100,                                    // max submissions checked per myinvois:sync run
-    'lookup_pages' => 5,                                    // documents/recent pages (of 100) read by the recovery lookup
+    'lookup_pages' => 5,                                    // documents/recent pages (of 100) read by the recovery lookup; at most 12
 ],
 ```
 
@@ -307,7 +307,7 @@ With `forParents()` or `queueSubmission()`, the package records a **submit attem
 The next submission of that parent looks the document up before sending anything:
 
 1. **Local first.** An unlinked `myinvois_documents` row of that number, in that environment, saved since the attempt, is linked to the parent.
-2. **Then LHDN.** It calls `documents/recent` once per document type for the whole batch (`InvoiceDirection=Sent`, a submission window from 5 minutes before the first attempt to 30 minutes after the last), reading up to 5 pages of 100 (`services.myinvois.lookup_pages`). A match is the same `internalId` and the exact same `dateTimeIssued` (the number alone, for a document sent without an issue time). An entry whose status the package does not know is logged and not taken as a match. When a resend reused the issue time, the window starts at the first attempt that sent it, in case the original landed late.
+2. **Then LHDN.** It calls `documents/recent` once per document type for the whole batch (`InvoiceDirection=Sent`, a submission window from 5 minutes before the first attempt to 30 minutes after the last), reading up to 5 pages of 100 (`services.myinvois.lookup_pages`, capped at 12: LHDN allows `documents/recent` 12 requests a minute per client id). A match is the same `internalId` and the exact same `dateTimeIssued` (the number alone, for a document sent without an issue time). An entry whose status the package does not know is logged and not taken as a match. When a resend reused the issue time, the window starts at the first attempt that sent it, in case the original landed late.
 
 Every document of the batch is decided before anything is written. If any document is refused, the whole call is refused and nothing changes.
 
@@ -336,9 +336,11 @@ $count = Myinvois::releasePendingAttempts($parent, meta: ['user_id' => auth()->i
 ```
 
 - Closes every pending attempt of the parent in its environment (`$preprod` defaults to the parent's client, like `hasPendingAttempt()`) with outcome `released`, and returns how many. `hasPendingAttempt()` is then false.
-- `$meta` is stored with a `released_at` timestamp in the attempt's `meta` column (migration 004; skipped if you have not run it).
+- `$meta` is stored with a `released_at` timestamp (a reserved key) in the attempt's `meta` column. Run migration 004: without the column the attempts are still closed, and the meta is only logged as a warning.
 - It takes the parent's submission lock for the moment of the release, so a submission in flight, or the lock kept after an ambiguous failure (until `lock_seconds`), refuses it with `MyinvoisInFlightException`.
-- The next submission POSTs straight away, with no lookup and with the document's own issue time (a released attempt never lends its issue time the way a `not_found` one does). Nothing is cancelled or asked of MyInvois: if the portal shows the document was accepted after all, record or cancel it there.
+- The next submission POSTs straight away, with no lookup and with the document's own issue time (a released attempt never lends its issue time the way a `not_found` one does; if you pin `issued_at` yourself, that is what is sent).
+- Nothing is cancelled or asked of MyInvois, and with a fresh issue time DV302 cannot catch a copy. So release only once the portal shows the document is not there (or was cancelled): if it was accepted after all, a resend creates a second live e-invoice, and the package has no way to record the portal's copy for you.
+- A queued submission that is waiting out the pending attempt (and so has no lock at that moment) waits up to 2 seconds for the release to finish rather than failing as in flight. A submission that outlived its lock never overwrites a release: attempts are only closed while still pending.
 
 Notes:
 

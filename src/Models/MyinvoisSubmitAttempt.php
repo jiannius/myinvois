@@ -83,10 +83,24 @@ class MyinvoisSubmitAttempt extends Model
     }
 
     /**
-     * Close the attempt with an outcome (one of the constants above).
+     * Close the attempt with an outcome (one of the constants above), only if it is still
+     * pending: a submission that outlived its lock must not overwrite a release made meanwhile.
+     * Returns whether it closed it; when it did not, the model is refreshed from the row.
      */
-    public function close(string $outcome, array $attributes = []) : void
+    public function close(string $outcome, array $attributes = []) : bool
     {
-        $this->update([...$attributes, 'status' => static::CLOSED, 'outcome' => $outcome, 'closed_at' => now()]);
+        $this->forceFill([...$attributes, 'status' => static::CLOSED, 'outcome' => $outcome, 'closed_at' => now()]);
+
+        // getDirty() holds the cast values (json, date strings); the builder adds updated_at
+        $closed = $this->newQuery()->whereKey($this->getKey())->where('status', static::PENDING)->update($this->getDirty()) > 0;
+
+        if ($closed) {
+            $this->syncOriginal();
+        }
+        else {
+            $this->refresh();
+        }
+
+        return $closed;
     }
 }

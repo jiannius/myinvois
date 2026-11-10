@@ -1131,6 +1131,80 @@ class SubmitAttemptTest extends TestCase
         $this->assertSame(12, $this->recentCalls());
     }
 
+    #[Test]
+    public function the_page_limit_falls_back_on_bad_values_and_is_capped_by_the_rate_limit() : void
+    {
+        foreach ([null => 5, 0 => 5, -3 => 5, 'abc' => 5, 8 => 8, 12 => 12, 50 => 12] as $value => $pages) {
+            config(['services.myinvois.lookup_pages' => $value === '' ? null : $value]);
+            $this->assertSame($pages, \Jiannius\Myinvois\Support\SubmitAttempts::lookupPages(), var_export($value, true));
+        }
+    }
+
+    #[Test]
+    public function a_waiting_job_retaking_its_lock_waits_out_a_release_holding_it_for_a_moment() : void
+    {
+        $order = Order::create();
+        $release = \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false);
+        Sleep::whenFakingSleep(function () use ($order, &$release) {
+            if ($release) \Jiannius\Myinvois\Support\SubmissionLock::release([$order], false, $release);
+            $release = null;
+        });
+
+        // the job's lock lapsed while it waited out a pending attempt
+        \Jiannius\Myinvois\Support\SubmissionLock::ensure([$order], false, 'job-owner');
+
+        Sleep::assertSleptTimes(1);
+        $this->expectInFlight(fn () => \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false));
+    }
+
+    #[Test]
+    public function retaking_a_lock_still_refuses_a_holder_that_keeps_it() : void
+    {
+        $order = Order::create();
+        \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false);
+
+        $this->expectInFlight(fn () => \Jiannius\Myinvois\Support\SubmissionLock::ensure([$order], false, 'job-owner'));
+
+        Sleep::assertSleptTimes(\Jiannius\Myinvois\Support\SubmissionLock::RETAKE_TRIES);
+    }
+
+    #[Test]
+    public function a_late_close_does_not_overwrite_a_release() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(6)->minutes();
+
+        // a submission that outlived its lock still holds the pending model in memory
+        Myinvois::releasePendingAttempts($order, meta: ['user_id' => 7]);
+
+        $this->assertFalse($attempt->close(MyinvoisSubmitAttempt::ACCEPTED, ['document_uuid' => 'UID1']));
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $attempt->outcome);
+
+        $row = $attempt->fresh();
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $row->outcome);
+        $this->assertNull($row->document_uuid);
+        $this->assertSame(7, $row->meta['user_id']);
+    }
+
+    #[Test]
+    public function without_the_meta_column_a_release_still_closes_and_logs_the_meta() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(6)->minutes();
+
+        \Illuminate\Support\Facades\Schema::table('myinvois_submit_attempts', fn ($table) => $table->dropColumn('meta'));
+        (new \ReflectionProperty(\Jiannius\Myinvois\Support\SubmitAttempts::class, 'hasMeta'))->setValue(null, false);
+        \Illuminate\Support\Facades\Log::spy();
+
+        $this->assertSame(1, Myinvois::releasePendingAttempts($order, meta: ['user_id' => 7]));
+
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $attempt->fresh()->outcome);
+        \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->once()
+            ->withArgs(fn ($message, $context) => str_contains($message, 'migration 004') && $context['meta']['user_id'] === 7);
+    }
+
     protected function expectInFlight(\Closure $callback) : void
     {
         try {
