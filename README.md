@@ -139,6 +139,8 @@ $result = app('myinvois')->submitDocuments([
 
 When **every** line item across all submitted documents has only classification code `004`, the SDK treats it as a consolidated submission and creates one `myinvois_documents` row per **line item** (using `description` as `document_number` and the parent invoice number as `consolidate_number`), rather than one row per document.
 
+To link a consolidated document's rows to a parent (`forParents()` / `queueSubmission()`), key the parent by the **document number**: that parent then owns every line's row. Keying each line by its `description` still works, but only when that description names nothing else in the batch. If two documents both have an "Audit Services" line, or a line is named like another document's number, the call throws `InvalidArgumentException` before anything is sent, instead of linking a row to the wrong parent.
+
 ### Failure handling
 
 A non-2xx response (other than 403) from MyInvois passes through `failedCallback` if set:
@@ -158,6 +160,7 @@ Failures surface as typed exceptions under `Jiannius\Myinvois\Exceptions`. All e
 | Exception | Raised for |
 |---|---|
 | `MyinvoisInFlightException` | `forParents()` / `queueSubmission()` refused a parent: another submission holds its lock, or its latest submission is already `submitted` / `valid`. Raised before anything is sent. |
+| `MyinvoisPendingAttemptException` | A subclass of the above. An earlier submission of the parent may have reached LHDN unrecorded, and the lookup refused to resend it or restored it. See [Recovering a submission that wasn't recorded](#recovering-a-submission-that-wasnt-recorded). |
 | `MyinvoisUnavailableException` | Network failure or timeout (`getReason()` holds the connection error text with URL query strings stripped; the original exception is not chained), HTTP 5xx, HTTP 429 (`getRetryAfter()`), a 408 or 429 from the token endpoint, or a 200 from the token endpoint with no token. Transient: show "try again later". |
 | `MyinvoisAuthenticationException` | Any 4xx from the OAuth token endpoint except 408/429 (e.g. `invalid_client` becomes *"MyInvois rejected the API credentials…"*, and `unauthorized_client` with an on-behalf-of TIN set becomes *"…not authorised to act on behalf of taxpayer TIN … on the preprod/production environment…"*; see `getTokenErrorMessage`), or a 401 from an API call that is still a 401 after one retry with a fresh token. |
 | `MyinvoisPermissionException` | HTTP 403 (`Permissions denied from MyInvois Portal`). Does not run `failedCallback`. |
@@ -174,7 +177,7 @@ Every call to MyInvois (the token request and each API call) has a connect timeo
 
 The status poll that `submitDocuments()` runs after LHDN accepts a submission uses a shorter total timeout of 15s (or your configured timeout, if that is lower), so the worst case for `submitDocuments()` stays reasonable. A direct `getSubmission()` call is not affected and uses the normal timeout.
 
-**After an `Unavailable` error from `submitDocuments()` the submission may already have reached LHDN** (a timeout can happen after LHDN accepted the request). Check with `getSubmission()` or `getRecentDocuments()` before resubmitting. Once LHDN has accepted a submission, the follow-up status polling never throws: if it fails, the local rows stay `submitted` and `submitDocuments()` returns normally; call `getSubmission()` later to refresh them.
+**After an `Unavailable` error from `submitDocuments()` the submission may already have reached LHDN** (a timeout can happen after LHDN accepted the request). With parents given (`forParents()` / `queueSubmission()`) the package checks this for you before the next submission (see [Recovering a submission that wasn't recorded](#recovering-a-submission-that-wasnt-recorded)); without them, check with `getSubmission()` or `getRecentDocuments()` before resubmitting. Once LHDN has accepted a submission, the follow-up status polling never throws: if it fails, the local rows stay `submitted` and `submitDocuments()` returns normally; call `getSubmission()` later to refresh them.
 
 Configuration errors (missing client id / secret, missing private key / certificate, missing sandbox credentials) are **not** converted: they are still thrown as a plain `\Exception`.
 
@@ -232,12 +235,12 @@ use Jiannius\Myinvois\Myinvois;
 
 Myinvois::queueSubmission(
     documents: [$document],                    // the flat document contract; validate it first
-    parents: ['INV-2026-0001' => $invoice],    // row document_number => model
+    parents: ['INV-2026-0001' => $invoice],    // document number => model
     context: ['batch_id' => $batch->id],       // optional, scalars/arrays; comes back in every event
 );
 ```
 
-- `parents` maps each **row's `document_number`** to its model: the invoice number, or for a consolidated document each line item's `description` (one row, so one parent, per line). Every row must have a parent, otherwise `InvalidArgumentException` is thrown before anything happens.
+- `parents` maps each **document number** to its model. For a consolidated document that parent owns every line's row; you may key each line by its `description` instead, as long as no other document of the batch uses that description (see [Consolidated submissions](#consolidated-submissions)). Every row must have a parent, otherwise `InvalidArgumentException` is thrown before anything happens.
 - All documents in one call must be submitted by the same client (the same org). The call compares each parent's resolved client id, on-behalf-of and environment and throws `InvalidArgumentException` on a mismatch, before anything is locked. Queue one call per org. `forParents()` enforces the same rule.
 - The call takes an in-flight lock on every parent, dispatches `Jobs\SubmitDocuments`, and returns immediately. It never contacts LHDN.
 - If a parent is already being submitted, or its latest submission in that environment is `submitted` or `valid`, it throws `MyinvoisInFlightException` straight away (`getParentReferences()` says which). `invalid` and `cancelled` parents can be submitted again.
@@ -262,6 +265,7 @@ The submission events carry `parents` (morph class + key, never models), `docume
 | `rejected` | LHDN refused some or all documents in the POST. |
 | `invalid` | LHDN accepted, then marked the documents invalid after validating. `errors` are LHDN's reasons (the row's `getErrors()`), read from the document details: an INVALID outcome costs one extra `documents/{uuid}/details` call per document (a consolidated e-invoice's rows share one). If that call fails or is rate limited the event still fires, with `errors` empty. |
 | `in_flight` | Another submission holds the lock, or the parent is already `submitted` / `valid`. |
+| `pending` | An earlier attempt may have reached LHDN unrecorded, and the lookup refused to resend: still checking, MyInvois could not be checked, or several live matches. `errors` says which. Nothing was sent. See [Recovering a submission that wasn't recorded](#recovering-a-submission-that-wasnt-recorded). |
 | `unavailable` | LHDN or its token endpoint stayed down through every retry. Nothing was sent. |
 | `environment` | The client resolved on the worker is not the environment the job was queued for. Submit again. |
 | `error` | Non-retryable: rejected credentials, a permission error, a deleted parent, a bug. |
@@ -276,7 +280,7 @@ Event::listen(SubmissionFailed::class, function (SubmissionFailed $event) {
 ### How the jobs behave
 
 - **Retries** happen only when LHDN definitely did not receive the request: a failed token request or a 429. The job waits `Retry-After` when LHDN gives one, otherwise 30s, 60s, 120s, up to three retries, then fires `SubmissionFailed` (`unavailable`).
-- **After an ambiguous failure** (a timeout or 5xx on the submission POST) the job does **not** retry and the lock stays until its TTL (`lock_seconds`, default 300). Check LHDN (`getSubmission()`, `getRecentDocuments()`) before resubmitting. If it did not go through, the user simply resubmits once the lock expires.
+- **After an ambiguous failure** (a timeout or 5xx on the submission POST) the job does **not** retry and the lock stays until its TTL (`lock_seconds`, default 300). The submit attempt stays pending, so the next submission looks the document up on LHDN first (see [Recovering a submission that wasn't recorded](#recovering-a-submission-that-wasnt-recorded)): the user simply resubmits once the lock expires.
 - **Unhandled errors**: a failure while resolving the client is reported and announced as `SubmissionFailed` (`error`), with the lock freed. A listener that throws is reported (`report()`) and cannot stop the submission, the saving of rows or the poll. As a last net each job stops after three unhandled exceptions, waiting 30s, 60s, 120s between them.
 - **Redelivery**: set the queue connection's `retry_after` **above** the submit job's timeout (120 seconds; Laravel's default of 90 is too low). The job keeps a run marker per submission (`claimed`, then `posting` right before the request leaves, then `accepted` once the rows are saved, then `done`). Each run writes its own id into the `claimed` marker, and right before the request leaves it checks (atomically) that the marker is still its own. A copy delivered again after a worker died *before* the request was sent takes the marker over and submits normally; if the first copy was only slow, it finds the marker is no longer its own before its request and stands down, so one submission is posted once, and releases its job (150 seconds) instead of finishing it, so the queue re-checks later in case the other copy died before it posted. (The lock check does not do this: both copies hold the same lock token.) After a worker died *while posting*, the copy does not post: it fires `SubmissionFailed` (`ambiguous`) and keeps the lock until its TTL, so check LHDN before resubmitting. After it died once LHDN had accepted and the rows were saved, the copy dispatches the status poll and fires `SubmissionAccepted`. After a finished run a redelivery does nothing. An exception that escapes the job before the request leaves the retry free to run. In a rare overlap (a copy that was slow, then a worker that died after LHDN accepted) the app can receive `SubmissionFailed` (`ambiguous`) and then `SubmissionAccepted` for the same documents: treat `SubmissionAccepted` and `SubmissionSucceeded` as authoritative.
 - **Nested transactions**: `queueSubmission()` frees its locks if the surrounding transaction rolls back. If it runs inside a nested transaction that commits and an outer transaction then rolls back, Laravel discards the rollback callback, so the lock only lapses at its TTL (`lock_seconds`, default 300). There is no cheap fix: queue the submission after the outermost transaction commits.
@@ -289,6 +293,39 @@ Event::listen(SubmissionFailed::class, function (SubmissionFailed $event) {
 ### The in-flight lock
 
 One cache lock per parent and environment (`myinvois:submit:{prod|preprod}:{morph class}:{id}`), so the same document cannot reach LHDN twice at once. No migration, no extra `Status` case. A consolidated submission takes the locks of all its parents, all or nothing. Use a shared store (Redis, database, ...) on a multi-server setup: set `lock_store` if your default cache store is per-server. The lock is released as soon as the rows are written or a rejection is known, and kept until its TTL after an ambiguous failure.
+
+### Recovering a submission that wasn't recorded
+
+A submission can reach LHDN without anyone recording it. The POST times out after LHDN accepted it, a 5xx comes back although LHDN kept the batch, or the process dies before the rows are written. Submitting again would create a second live e-invoice: LHDN's duplicate check (DV302) only catches a copy with the same issue date and time, and apps usually rebuild `issued_at`.
+
+With `forParents()` or `queueSubmission()`, the package records a **submit attempt** (table `myinvois_submit_attempts`, run the migrations) per document and parent right before the POST leaves.
+
+- **Closed** once LHDN answers definitely: rows saved, `rejectedDocuments`, a whole-submission 4xx, or a token / 401 / 403 / 429 failure.
+- **Left pending** after a timeout, a 5xx or a dead process.
+
+The next submission of that parent looks the document up before sending anything:
+
+1. **Local first.** An unlinked `myinvois_documents` row of that number, in that environment, saved since the attempt, is linked to the parent.
+2. **Then LHDN.** It calls `documents/recent` (`InvoiceDirection=Sent`, the document type, a submission window from 5 minutes before the attempt to 30 minutes after), reading up to 5 pages of 100. A match is the same `internalId` and the exact same `dateTimeIssued`.
+
+| Lookup result | What happens |
+|---|---|
+| One `Submitted` / `Valid` match | Its rows are written (linked, one per line for a consolidated document, `created_at` = LHDN's received time). Nothing is sent. `MyinvoisPendingAttemptException` (`recovered`); the queued job fires `SubmissionAccepted` and polls instead. |
+| Only `Invalid` / `Cancelled` matches | The newest is recorded as a row, the attempt is closed, and the document is sent. |
+| Several live matches | Refused (`multiple_matches`), naming the number. Check MyInvois and cancel the extra one; the package never cancels on its own. |
+| The lookup fails (outage, error answer, more pages than it reads) | Refused (`lookup_failed`). The attempt stays pending. |
+| No match, attempt under 10 minutes old | Refused (`still_checking`). Try again later. |
+| No match, attempt 10 minutes old or more | The attempt is closed and the document is sent. Under 2 hours it reuses the attempt's issue time, so if the original was missed after all, DV302 marks the copy invalid instead of creating a second live e-invoice. |
+
+Every refusal is a `MyinvoisPendingAttemptException`, a subclass of `MyinvoisInFlightException`, thrown before anything is sent. `getReason()` is one of `still_checking`, `lookup_failed`, `multiple_matches` or `recovered`; `getDocumentNumbers()` / `getParentReferences()` say which. The queued job reports the first three as `SubmissionFailed` with reason `pending`. A rate-limit, authentication or permission failure during the lookup is thrown as itself.
+
+**Ask before editing.** `Myinvois::hasPendingAttempt($parent)` (or `$parent->hasPendingMyinvoisAttempt()` from the trait) is `true` while an attempt is pending in the parent's environment. Lock edits and voids meanwhile: the next submission resolves it.
+
+Notes:
+
+- A plain `submitDocuments()` without parents records no attempt.
+- Don't call `submitDocuments()` inside a database transaction you might roll back: the attempt row would roll back with it.
+- `MyinvoisFake` records no attempts (it cannot time out).
 
 ## Status sync
 
@@ -502,7 +539,7 @@ app('myinvois')->rejectDocument($uid, reason: 'Goods not received');
 
 LHDN requires a reason for both actions. `rejectDocument` throws `\InvalidArgumentException` (before any network call) if `$reason` is blank. `cancelDocument` still accepts a null reason, but LHDN requires one for cancellation too, so always pass it.
 
-`cancelDocument` updates the local row's status to `cancelled` and stores the reason in `response`. The 72-hour window is enforced client-side via `MyinvoisDocument::isCancellable()`.
+`cancelDocument` updates the local row's status to `cancelled` and stores the reason in `response`. The 72-hour window is enforced client-side via `MyinvoisDocument::isCancellable()`, counted from LHDN's `dateTimeValidated` when the stored response has it, else from the row's `created_at`.
 
 `rejectDocument` sends a `PUT` (like `cancelDocument`) and returns LHDN's JSON response. It does not touch the local `myinvois_documents` table: a rejected document is one issued to you, so there may be no local row (or only an inbound one), and the supplier still has to act on the rejection.
 
@@ -560,6 +597,7 @@ The trait adds:
 - `preprodMyinvoisDocuments()` — `MorphMany` for preprod docs
 - `latestMyinvoisDocument()` / `preprodLatestMyinvoisDocument()` — `MorphOne` (via `latestOfMany`)
 - `isSubmittedToMyinvois($submitted = true, $preprod = false)` — boolean check
+- `hasPendingMyinvoisAttempt(?bool $preprod = null)` — an earlier submission may have reached LHDN unrecorded; lock edits and voids while true
 - `getMyinvoisValidationLink($preprod = false)` — share URL on the MyInvois portal
 - `getMyinvoisQrCode($preprod = false)` — data-URI PNG of the QR for the validation link
 - `scopeWithSubmittedMyinvoisDocument($submitted, $preprod)` — query scope
