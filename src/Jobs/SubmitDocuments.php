@@ -15,11 +15,13 @@ use Jiannius\Myinvois\Events\SubmissionAccepted;
 use Jiannius\Myinvois\Events\SubmissionFailed;
 use Jiannius\Myinvois\Exceptions\MyinvoisException;
 use Jiannius\Myinvois\Exceptions\MyinvoisInFlightException;
+use Jiannius\Myinvois\Exceptions\MyinvoisPendingAttemptException;
 use Jiannius\Myinvois\Exceptions\MyinvoisThrottledException;
 use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
 use Jiannius\Myinvois\Support\ParentReference;
+use Jiannius\Myinvois\Support\ParentRows;
 use Jiannius\Myinvois\Support\SubmissionLock;
 use Throwable;
 
@@ -111,8 +113,15 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     protected bool $superseded = false;
 
     /**
+     * Document numbers this run restored instead of sending (see announceRecovered()).
+     *
+     * @var array<int, string>
+     */
+    protected array $recoveredNumbers = [];
+
+    /**
      * @param  array<int, array>  $documents  the flat document contract
-     * @param  array<string, array{type: string, id: mixed}>  $parents  row `document_number` => parent reference
+     * @param  array<string, array{type: string, id: mixed}>  $parents  parent key (document number, or a consolidated line's description) => parent reference
      * @param  array<string, mixed>  $context
      */
     public function __construct(
@@ -147,6 +156,9 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         $this->runId = bin2hex(random_bytes(8));
         $this->postingSet = false;
         $this->superseded = false;
+
+        // documents an earlier run of this job restored (and announced) are not sent again
+        $this->recoveredNumbers = array_values(array_map('strval', (array) $this->store()->get($this->restoredKey(), [])));
 
         [$state, $detail] = $this->claimRun();
 
@@ -244,19 +256,48 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
+        // everything was restored by an earlier run (and announced then): nothing left to send
+        if (! $this->documentsToSend()) return;
+
         try {
-            // forParents() also refuses parents that resolve to more than one client
-            $result = $client
-                ->forParents($models, $this->lockOwner)
-                ->withoutPolling()
-                ->beforePost(fn () => $this->postingHook())
-                ->submitDocuments($this->documents);
+            try {
+                // forParents() also refuses parents that resolve to more than one client
+                $result = $client
+                    ->forParents($models, $this->lockOwner)
+                    ->withoutPolling()
+                    ->beforePost(fn () => $this->postingHook())
+                    ->submitDocuments($this->documentsToSend());
+            }
+            finally {
+                // documents whose earlier submission LHDN had accepted are restored, not sent:
+                // announce them like an acceptance, whatever happens to the rest of the batch
+                $this->announceRecovered($client);
+            }
         }
         catch (RunSupersededException) {
             // another copy owns the run and has (or will) report: no announcement, and the
             // lock stays -- it is shared with that copy, whose own run frees it. handle()
             // releases this job for a later re-check instead of acking it.
             $this->superseded = true;
+
+            return;
+        }
+        catch (MyinvoisPendingAttemptException $e) {
+            // `recovered`: every document was restored, already announced above
+            if ($e->getReason() === MyinvoisPendingAttemptException::RECOVERED) return;
+
+            // nothing was sent: wait until the lookup can decide, or LHDN can be asked again
+            $retry = in_array($e->getReason(), [MyinvoisPendingAttemptException::STILL_CHECKING, MyinvoisPendingAttemptException::LOOKUP_FAILED], true)
+                ? $this->countPendingRetry()
+                : null;
+
+            if ($retry !== null && $retry <= count(static::RETRY_DELAYS)) {
+                $this->retryLater($e->getRetryAfter() ?? static::RETRY_DELAYS[$retry - 1]);
+
+                return;
+            }
+
+            $this->announce(SubmissionFailed::PENDING, [$e->getMessage()]);
 
             return;
         }
@@ -405,6 +446,74 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
+     * The lookup found earlier accepted submissions and restored their rows instead of
+     * sending those documents again: per submission, dispatch the poll and fire
+     * SubmissionAccepted from the rows. Those documents are then left out of any failure
+     * announced for the rest of the batch.
+     */
+    protected function announceRecovered(Myinvois $client) : void
+    {
+        try {
+            $restored = $client->recoveredSubmissions();
+
+            if (! $restored) return;
+
+            foreach ($restored as $documentNumbers) {
+                $this->recoveredNumbers = [...$this->recoveredNumbers, ...array_map('strval', $documentNumbers)];
+            }
+
+            // a retry of this job (a 429 on the rest of the batch) must not send them again
+            $this->store()->put($this->restoredKey(), array_values(array_unique($this->recoveredNumbers)), static::SETTLED_SECONDS);
+
+            foreach ($restored as $uid => $documentNumbers) {
+                $numbers = ($this->documentModel())::query()
+                    ->where('submission_uid', $uid)
+                    ->pluck('document_number')
+                    ->filter()->unique()->values()->all();
+
+                if ($numbers) $this->announceAccepted($numbers, (string) $uid);
+            }
+        }
+        catch (Throwable $e) {
+            // runs in a finally: never mask what submitDocuments() threw
+            report($e);
+        }
+    }
+
+    /**
+     * The job's documents without those restored by this job (and any other document of a
+     * restored parent: that parent now holds the restored submission).
+     *
+     * @return array<int, array>
+     */
+    protected function documentsToSend() : array
+    {
+        if (! $this->recoveredNumbers) return $this->documents;
+
+        $restoredParents = collect($this->entries())
+            ->filter(fn ($entry) => in_array((string) $entry['document'], $this->recoveredNumbers, true))
+            ->pluck('parent')->filter()
+            ->map(fn ($reference) => $reference['type'].':'.$reference['id'])
+            ->unique()->all();
+
+        $blocked = collect($this->entries())
+            ->filter(fn ($entry) => $entry['parent'] && in_array($entry['parent']['type'].':'.$entry['parent']['id'], $restoredParents, true))
+            ->pluck('document')->map(fn ($number) => (string) $number)
+            ->merge($this->recoveredNumbers)
+            ->unique()->all();
+
+        return collect($this->documents)
+            ->reject(fn ($document) => in_array((string) data_get($document, 'number'), $blocked, true))
+            ->values()
+            ->all();
+    }
+
+    protected function restoredKey() : string
+    {
+        return 'myinvois:submit-restored:'.$this->lockOwner;
+    }
+
+    /**
      * LHDN's error messages from a rejected-document item or a whole error body.
      *
      * @return array<int, string>
@@ -424,7 +533,9 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function announce(string $reason, array $errors, ?array $numbers = null, ?string $submissionUid = null, bool $ambiguous = false) : void
     {
-        $numbers ??= array_keys($this->parents);
+        $numbers ??= collect($this->entries())
+            ->reject(fn ($entry) => in_array((string) $entry['document'], $this->recoveredNumbers, true))
+            ->pluck('row')->filter()->unique()->values()->all();
 
         $this->fire(new SubmissionFailed(
             $this->referencesFor($numbers),
@@ -668,12 +779,35 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function referencesFor(array $numbers) : array
     {
-        return collect($numbers)
-            ->map(fn ($number) => $this->parents[$number] ?? null)
+        $numbers = array_map('strval', $numbers);
+
+        return collect($this->entries())
+            ->filter(fn ($entry) => in_array((string) $entry['row'], $numbers, true) || in_array((string) $entry['document'], $numbers, true))
+            ->pluck('parent')
             ->filter()
             ->unique(fn ($reference) => $reference['type'].':'.$reference['id'])
             ->values()
             ->all();
+    }
+
+    /**
+     * The parent reference of every row of the job's documents.
+     *
+     * @return array<int, array{document: ?string, row: ?string, key: ?string, parent: mixed}>
+     */
+    protected function entries() : array
+    {
+        try {
+            return ParentRows::resolve($this->documents, $this->parents);
+        }
+        catch (\InvalidArgumentException) {
+            // an ambiguous payload (queued before keys were checked): every parent given, so
+            // an announcement still says which parents it is about
+            return collect($this->parents)
+                ->map(fn ($reference, $key) => ['document' => (string) $key, 'row' => (string) $key, 'key' => (string) $key, 'parent' => $reference])
+                ->values()
+                ->all();
+        }
     }
 
     /**
@@ -703,8 +837,21 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function countRetry() : int
     {
+        return $this->increment('myinvois:submit-retries:'.$this->lockOwner);
+    }
+
+    /**
+     * Count one wait for a pending attempt's lookup (still checking, or MyInvois could not be
+     * asked) and return the running total. Kept apart from the token / 429 retries.
+     */
+    protected function countPendingRetry() : int
+    {
+        return $this->increment('myinvois:submit-retries:pending:'.$this->lockOwner);
+    }
+
+    protected function increment(string $key) : int
+    {
         $store = Cache::store(config('services.myinvois.lock_store'));
-        $key = 'myinvois:submit-retries:'.$this->lockOwner;
 
         $store->add($key, 0, 86400);
 
