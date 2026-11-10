@@ -15,11 +15,13 @@ use Jiannius\Myinvois\Events\SubmissionAccepted;
 use Jiannius\Myinvois\Events\SubmissionFailed;
 use Jiannius\Myinvois\Exceptions\MyinvoisException;
 use Jiannius\Myinvois\Exceptions\MyinvoisInFlightException;
+use Jiannius\Myinvois\Exceptions\MyinvoisPendingAttemptException;
 use Jiannius\Myinvois\Exceptions\MyinvoisThrottledException;
 use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
 use Jiannius\Myinvois\Models\MyinvoisDocument;
 use Jiannius\Myinvois\Myinvois;
 use Jiannius\Myinvois\Support\ParentReference;
+use Jiannius\Myinvois\Support\ParentRows;
 use Jiannius\Myinvois\Support\SubmissionLock;
 use Throwable;
 
@@ -112,7 +114,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
 
     /**
      * @param  array<int, array>  $documents  the flat document contract
-     * @param  array<string, array{type: string, id: mixed}>  $parents  row `document_number` => parent reference
+     * @param  array<string, array{type: string, id: mixed}>  $parents  parent key (document number, or a consolidated line's description) => parent reference
      * @param  array<string, mixed>  $context
      */
     public function __construct(
@@ -257,6 +259,14 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             // lock stays -- it is shared with that copy, whose own run frees it. handle()
             // releases this job for a later re-check instead of acking it.
             $this->superseded = true;
+
+            return;
+        }
+        catch (MyinvoisPendingAttemptException $e) {
+            // an earlier submission LHDN accepted unrecorded is restored: announce it like an
+            // acceptance (and poll it); any other outcome of the lookup refused to resend
+            if ($e->getReason() === MyinvoisPendingAttemptException::RECOVERED) $this->announceRecovered($e);
+            else $this->announce(SubmissionFailed::PENDING, [$e->getMessage()]);
 
             return;
         }
@@ -405,6 +415,22 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
+     * The lookup found an earlier accepted submission and restored its rows: per submission,
+     * dispatch the poll and fire SubmissionAccepted from those rows.
+     */
+    protected function announceRecovered(MyinvoisPendingAttemptException $e) : void
+    {
+        foreach ($e->getSubmissionUids() as $uid) {
+            $numbers = ($this->documentModel())::query()
+                ->where('submission_uid', $uid)
+                ->pluck('document_number')
+                ->filter()->unique()->values()->all();
+
+            if ($numbers) $this->announceAccepted($numbers, $uid);
+        }
+    }
+
+    /**
      * LHDN's error messages from a rejected-document item or a whole error body.
      *
      * @return array<int, string>
@@ -424,7 +450,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function announce(string $reason, array $errors, ?array $numbers = null, ?string $submissionUid = null, bool $ambiguous = false) : void
     {
-        $numbers ??= array_keys($this->parents);
+        $numbers ??= collect($this->entries())->pluck('row')->filter()->unique()->values()->all();
 
         $this->fire(new SubmissionFailed(
             $this->referencesFor($numbers),
@@ -668,12 +694,30 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function referencesFor(array $numbers) : array
     {
-        return collect($numbers)
-            ->map(fn ($number) => $this->parents[$number] ?? null)
+        $numbers = array_map('strval', $numbers);
+
+        return collect($this->entries())
+            ->filter(fn ($entry) => in_array((string) $entry['row'], $numbers, true) || in_array((string) $entry['document'], $numbers, true))
+            ->pluck('parent')
             ->filter()
             ->unique(fn ($reference) => $reference['type'].':'.$reference['id'])
             ->values()
             ->all();
+    }
+
+    /**
+     * The parent reference of every row of the job's documents.
+     *
+     * @return array<int, array{document: ?string, row: ?string, key: ?string, parent: mixed}>
+     */
+    protected function entries() : array
+    {
+        try {
+            return ParentRows::resolve($this->documents, $this->parents);
+        }
+        catch (\InvalidArgumentException) {
+            return [];
+        }
     }
 
     /**

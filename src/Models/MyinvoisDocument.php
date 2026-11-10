@@ -113,10 +113,25 @@ class MyinvoisDocument extends Model
     }
 
     /**
-     * Check if the document is cancellable
+     * Check if the document is cancellable: VALID and inside LHDN's 72-hour window, counted
+     * from LHDN's validation time when the response has it, else from the row's created_at.
      */
     public function isCancellable() : bool
     {
-        return $this->status?->is('VALID') && $this->created_at->diffInHours(now()) < 72;
+        if (! $this->status?->is('VALID')) return false;
+
+        $from = $this->created_at;
+        $validated = data_get($this->response, 'dateTimeValidated');
+
+        if (is_string($validated) && $validated !== '') {
+            try {
+                $from = \Illuminate\Support\Carbon::parse($validated);
+            }
+            catch (\Throwable) {
+                // keep created_at
+            }
+        }
+
+        return $from !== null && $from->diffInHours(now()) < 72;
     }
 }

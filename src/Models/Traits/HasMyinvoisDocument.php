@@ -100,6 +100,16 @@ trait HasMyinvoisDocument
     }
 
     /**
+     * Whether a submission of this model may have reached MyInvois without being recorded
+     * (a timeout, a 5xx, a process that died): see Myinvois::hasPendingAttempt(). Hold off
+     * edits and voids while it is true; the next submission resolves it.
+     */
+    public function hasPendingMyinvoisAttempt(?bool $preprod = null) : bool
+    {
+        return \Jiannius\Myinvois\Myinvois::hasPendingAttempt($this, $preprod);
+    }
+
+    /**
      * Get the myinvois validation link
      */
     public function getMyinvoisValidationLink($preprod = false) : string

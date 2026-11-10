@@ -48,6 +48,11 @@ class SubmitAttemptTest extends TestCase
     /** @var mixed what the submission poll answers */
     protected $poll;
 
+    /** Requests seen by the fake, counted before it answers (a thrown timeout is not recorded by Http). */
+    protected int $postCount = 0;
+
+    protected int $recentCount = 0;
+
     protected function setUp() : void
     {
         parent::setUp();
@@ -66,8 +71,18 @@ class SubmitAttemptTest extends TestCase
             $url = $request->url();
 
             if (str_contains($url, '/connect/token')) return value($this->token, $request);
-            if (str_contains($url, 'documents/recent')) return value($this->recent, $request);
-            if ($request->method() === 'POST' && str_contains($url, 'documentsubmissions')) return value($this->post, $request);
+            if (str_contains($url, 'documents/recent')) {
+                $this->recentCount++;
+
+                return value($this->recent, $request);
+            }
+
+            if ($request->method() === 'POST' && str_contains($url, 'documentsubmissions')) {
+                $this->postCount++;
+
+                return value($this->post, $request);
+            }
+
             if (str_contains($url, 'documentsubmissions/')) return value($this->poll, $request);
 
             return Http::response([], 404);
@@ -118,12 +133,12 @@ class SubmitAttemptTest extends TestCase
 
     protected function posts() : int
     {
-        return Http::recorded(fn ($request) => $request->method() === 'POST' && str_contains($request->url(), 'documentsubmissions'))->count();
+        return $this->postCount;
     }
 
     protected function recentCalls() : int
     {
-        return Http::recorded(fn ($request) => str_contains($request->url(), 'documents/recent'))->count();
+        return $this->recentCount;
     }
 
     /** The IssueDate + IssueTime of the last document POSTed. */
@@ -284,11 +299,12 @@ class SubmitAttemptTest extends TestCase
         $this->assertSame(MyinvoisSubmitAttempt::CLOSED, $attempt->status);
         $this->assertFalse(Myinvois::hasPendingAttempt($order));
 
+        $before = $this->posts();
         $this->post = fn () => $this->accepted();
         $this->myinvois()->forParents(['INV-0001' => $order])->withoutPolling()->submitDocuments([DocumentFixture::invoice()]);
 
         $this->assertSame(0, $this->recentCalls());
-        $this->assertSame(2, $this->posts());
+        $this->assertSame($before + 1, $this->posts());
     }
 
     // ---- lookup --------------------------------------------------------

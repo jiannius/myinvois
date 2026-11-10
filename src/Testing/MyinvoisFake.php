@@ -386,6 +386,7 @@ class MyinvoisFake extends Myinvois
 
         $model = MyinvoisDocument::$useModel;
         $submissionUid = data_get($response, 'submissionUid');
+        $entries = $this->parentEntries($documents);
 
         foreach (data_get($response, 'acceptedDocuments', []) as $data) {
             $document = collect($documents)->firstWhere('number', data_get($data, 'invoiceCodeNumber'));
@@ -401,7 +402,7 @@ class MyinvoisFake extends Myinvois
                         'status' => $this->pollStatus ? 'submitted' : $this->status,
                         'is_preprod' => $this->getSettings('preprod'),
                         'response' => $summary,
-                        ...$this->parentAttributes(data_get($lineItem, 'description')),
+                        ...$this->parentAttributes($entries, data_get($document, 'number'), data_get($lineItem, 'description')),
                     ]));
                 }
             }
@@ -413,7 +414,7 @@ class MyinvoisFake extends Myinvois
                     'status' => $this->pollStatus ? 'submitted' : $this->status,
                     'is_preprod' => $this->getSettings('preprod'),
                     'response' => $summary,
-                    ...$this->parentAttributes(data_get($data, 'invoiceCodeNumber')),
+                    ...$this->parentAttributes($entries, data_get($data, 'invoiceCodeNumber'), data_get($data, 'invoiceCodeNumber')),
                 ]));
             }
         }

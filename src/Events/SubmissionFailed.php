@@ -9,6 +9,9 @@ namespace Jiannius\Myinvois\Events;
  * - `rejected`    LHDN refused documents in the POST (the whole batch, or some of it)
  * - `invalid`     LHDN accepted, then marked the documents INVALID (`$errors` are its messages)
  * - `in_flight`   another submission holds the lock, or the parent is already SUBMITTED / VALID
+ * - `pending`     an earlier attempt may have reached LHDN unrecorded, and the lookup refused to
+ *                 resend: still checking, MyInvois could not be checked, or several live matches
+ *                 (`$errors` says which). Nothing was sent; try again later.
  * - `unavailable` LHDN / the token endpoint stayed unreachable through every retry; nothing was sent
  * - `environment` the client resolved on the worker is not the environment the job was queued for
  * - `error`       a non-retryable error (credentials, permission, a missing parent, a bug)
@@ -24,6 +27,8 @@ class SubmissionFailed
     public const INVALID = 'invalid';
 
     public const IN_FLIGHT = 'in_flight';
+
+    public const PENDING = 'pending';
 
     public const UNAVAILABLE = 'unavailable';
 
