@@ -33,4 +33,10 @@ class MigrationTest extends TestCase
             'updated_at',
         ]));
     }
+
+    #[Test]
+    public function submit_attempts_have_a_meta_column() : void
+    {
+        $this->assertTrue(Schema::hasColumn('myinvois_submit_attempts', 'meta'));
+    }
 }

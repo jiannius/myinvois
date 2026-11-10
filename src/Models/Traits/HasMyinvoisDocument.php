@@ -110,6 +110,15 @@ trait HasMyinvoisDocument
     }
 
     /**
+     * Close this model's pending submit attempts after a person checked the MyInvois portal:
+     * see Myinvois::releasePendingAttempts().
+     */
+    public function releasePendingMyinvoisAttempts(?bool $preprod = null, array $meta = []) : int
+    {
+        return \Jiannius\Myinvois\Myinvois::releasePendingAttempts($this, $preprod, $meta);
+    }
+
+    /**
      * Get the myinvois validation link
      */
     public function getMyinvoisValidationLink($preprod = false) : string

@@ -1010,6 +1010,211 @@ class SubmitAttemptTest extends TestCase
         $this->assertSame(0, $this->posts());
     }
 
+    // ---- release by hand -----------------------------------------------
+
+    #[Test]
+    public function a_released_attempt_is_no_longer_pending_and_the_next_submit_posts_without_a_lookup() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(15)->minutes();
+
+        $released = Myinvois::releasePendingAttempts($order, meta: ['user_id' => 7, 'reason' => 'checked the portal']);
+
+        $this->assertSame(1, $released);
+        $this->assertFalse(Myinvois::hasPendingAttempt($order));
+        $this->assertFalse($order->hasPendingMyinvoisAttempt());
+
+        $attempt->refresh();
+        $this->assertSame(MyinvoisSubmitAttempt::CLOSED, $attempt->status);
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $attempt->outcome);
+        $this->assertSame(7, $attempt->meta['user_id']);
+        $this->assertSame('checked the portal', $attempt->meta['reason']);
+        $this->assertSame(now()->toIso8601String(), $attempt->meta['released_at']);
+        $this->assertNotNull($attempt->closed_at);
+
+        // within REUSE_MINUTES: a not_found attempt would lend its issue time; a released one does not
+        $this->post = fn () => $this->accepted();
+        $this->myinvois()->forParents(['INV-0001' => $order])->withoutPolling()
+            ->submitDocuments([DocumentFixture::invoice(['issued_at' => '2026-11-10 10:15:00'])]);
+
+        $this->assertSame(0, $this->recentCalls());
+        $this->assertSame(2, $this->posts());
+        $this->assertSame('2026-11-10T10:15:00Z', $this->postedIssuedAt());
+        $this->assertSame(MyinvoisSubmitAttempt::ACCEPTED, MyinvoisSubmitAttempt::query()->whereKeyNot($attempt->getKey())->sole()->outcome);
+        $this->assertSame($order->id, MyinvoisDocument::sole()->parent_id);
+    }
+
+    #[Test]
+    public function releasing_a_resend_that_reused_the_issue_time_gives_the_next_one_a_fresh_time() : void
+    {
+        $order = Order::create();
+        $this->timedOut($order);
+        $this->travel(15)->minutes();
+
+        // not found, resent with the reused issue time, and that times out too
+        $this->post = fn () => throw new ConnectionException('timed out');
+        try {
+            $this->myinvois()->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice(['issued_at' => '2026-11-10 10:15:00'])]);
+            $this->fail('Expected the timeout to surface.');
+        }
+        catch (MyinvoisUnavailableException) {
+        }
+        $resend = MyinvoisSubmitAttempt::query()->pending()->sole();
+        $this->assertSame('2026-01-15T09:30:00Z', $resend->issued_at, 'the resend reused the issue time');
+
+        // the lock is kept after an ambiguous failure: a release waits for its TTL
+        $this->expectInFlight(fn () => Myinvois::releasePendingAttempts($order));
+        $this->travel(6)->minutes();
+
+        $this->assertSame(1, $order->releasePendingMyinvoisAttempts(meta: ['reason' => 'checked']));
+
+        $this->post = fn () => $this->accepted();
+        $recent = $this->recentCalls();
+        $this->myinvois()->forParents(['INV-0001' => $order])->withoutPolling()
+            ->submitDocuments([DocumentFixture::invoice(['issued_at' => '2026-11-10 10:21:00'])]);
+
+        $this->assertSame($recent, $this->recentCalls());
+        $this->assertSame('2026-11-10T10:21:00Z', $this->postedIssuedAt());
+    }
+
+    #[Test]
+    public function a_release_is_refused_while_a_submission_holds_the_lock() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(6)->minutes(); // past the lock the timeout kept
+
+        $owner = \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false);
+
+        $this->expectInFlight(fn () => Myinvois::releasePendingAttempts($order));
+        $this->assertSame(MyinvoisSubmitAttempt::PENDING, $attempt->refresh()->status);
+
+        \Jiannius\Myinvois\Support\SubmissionLock::release([$order], false, $owner);
+
+        $this->assertSame(1, Myinvois::releasePendingAttempts($order));
+
+        // and the lock it took for the release is free again
+        \Jiannius\Myinvois\Support\SubmissionLock::release([$order], false, \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false));
+    }
+
+    #[Test]
+    public function a_release_touches_only_that_parent_and_environment() : void
+    {
+        $order = Order::create();
+        $other = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(6)->minutes();
+
+        $this->assertSame(0, Myinvois::releasePendingAttempts($order, preprod: true));
+        $this->assertSame(0, Myinvois::releasePendingAttempts($other));
+        $this->assertSame(MyinvoisSubmitAttempt::PENDING, $attempt->refresh()->status);
+        $this->assertNull($attempt->meta);
+    }
+
+    #[Test]
+    public function the_lookup_page_limit_is_configurable() : void
+    {
+        $order = Order::create();
+        $this->timedOut($order);
+        $this->travel(15)->minutes();
+        $this->recent = fn (Request $request) => ($request->data()['pageNo'] ?? 1) < 7
+            ? $this->recentPage([$this->entry(['internalId' => 'OTHER'])], 7)
+            : $this->recentPage([$this->entry()], 7);
+
+        $this->assertSame(MyinvoisPendingAttemptException::LOOKUP_FAILED, $this->resubmit($order)->getReason());
+        $this->assertSame(5, $this->recentCalls());
+
+        config(['services.myinvois.lookup_pages' => 10]);
+
+        $this->assertSame(MyinvoisPendingAttemptException::RECOVERED, $this->resubmit($order)->getReason());
+        $this->assertSame(12, $this->recentCalls());
+    }
+
+    #[Test]
+    public function the_page_limit_falls_back_on_bad_values_and_is_capped_by_the_rate_limit() : void
+    {
+        foreach ([null => 5, 0 => 5, -3 => 5, 'abc' => 5, 8 => 8, 12 => 12, 50 => 12] as $value => $pages) {
+            config(['services.myinvois.lookup_pages' => $value === '' ? null : $value]);
+            $this->assertSame($pages, \Jiannius\Myinvois\Support\SubmitAttempts::lookupPages(), var_export($value, true));
+        }
+    }
+
+    #[Test]
+    public function a_waiting_job_retaking_its_lock_waits_out_a_release_holding_it_for_a_moment() : void
+    {
+        $order = Order::create();
+        $release = \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false);
+        Sleep::whenFakingSleep(function () use ($order, &$release) {
+            if ($release) \Jiannius\Myinvois\Support\SubmissionLock::release([$order], false, $release);
+            $release = null;
+        });
+
+        // the job's lock lapsed while it waited out a pending attempt
+        \Jiannius\Myinvois\Support\SubmissionLock::ensure([$order], false, 'job-owner');
+
+        Sleep::assertSleptTimes(1);
+        $this->expectInFlight(fn () => \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false));
+    }
+
+    #[Test]
+    public function retaking_a_lock_still_refuses_a_holder_that_keeps_it() : void
+    {
+        $order = Order::create();
+        \Jiannius\Myinvois\Support\SubmissionLock::acquire([$order], false);
+
+        $this->expectInFlight(fn () => \Jiannius\Myinvois\Support\SubmissionLock::ensure([$order], false, 'job-owner'));
+
+        Sleep::assertSleptTimes(\Jiannius\Myinvois\Support\SubmissionLock::RETAKE_TRIES);
+    }
+
+    #[Test]
+    public function a_late_close_does_not_overwrite_a_release() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(6)->minutes();
+
+        // a submission that outlived its lock still holds the pending model in memory
+        Myinvois::releasePendingAttempts($order, meta: ['user_id' => 7]);
+
+        $this->assertFalse($attempt->close(MyinvoisSubmitAttempt::ACCEPTED, ['document_uuid' => 'UID1']));
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $attempt->outcome);
+
+        $row = $attempt->fresh();
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $row->outcome);
+        $this->assertNull($row->document_uuid);
+        $this->assertSame(7, $row->meta['user_id']);
+    }
+
+    #[Test]
+    public function without_the_meta_column_a_release_still_closes_and_logs_the_meta() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(6)->minutes();
+
+        \Illuminate\Support\Facades\Schema::table('myinvois_submit_attempts', fn ($table) => $table->dropColumn('meta'));
+        (new \ReflectionProperty(\Jiannius\Myinvois\Support\SubmitAttempts::class, 'hasMeta'))->setValue(null, false);
+        \Illuminate\Support\Facades\Log::spy();
+
+        $this->assertSame(1, Myinvois::releasePendingAttempts($order, meta: ['user_id' => 7]));
+
+        $this->assertSame(MyinvoisSubmitAttempt::RELEASED, $attempt->fresh()->outcome);
+        \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->once()
+            ->withArgs(fn ($message, $context) => str_contains($message, 'migration 004') && $context['meta']['user_id'] === 7);
+    }
+
+    protected function expectInFlight(\Closure $callback) : void
+    {
+        try {
+            $callback();
+            $this->fail('Expected MyinvoisInFlightException.');
+        }
+        catch (MyinvoisInFlightException) {
+        }
+    }
+
     // ---- cancel window -------------------------------------------------
 
     #[Test]

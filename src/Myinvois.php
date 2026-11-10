@@ -15,6 +15,7 @@ use Jiannius\Myinvois\Contracts\ResolvesMyinvoisClient;
 use Jiannius\Myinvois\Enums\Status;
 use Jiannius\Myinvois\Exceptions\MyinvoisAuthenticationException;
 use Jiannius\Myinvois\Exceptions\MyinvoisException;
+use Jiannius\Myinvois\Exceptions\MyinvoisInFlightException;
 use Jiannius\Myinvois\Exceptions\MyinvoisPermissionException;
 use Jiannius\Myinvois\Exceptions\MyinvoisThrottledException;
 use Jiannius\Myinvois\Exceptions\MyinvoisUnavailableException;
@@ -371,6 +372,39 @@ class Myinvois
         $preprod ??= (bool) static::clientFor($parent)->getSettings('preprod');
 
         return SubmitAttempts::pendingFor($parent, $preprod);
+    }
+
+    /**
+     * Close every pending submit attempt of the parent, for an admin "mark as checked" after a
+     * person checked the MyInvois portal: an attempt the next submission cannot settle (more
+     * documents in the window than the lookup reads, older than LHDN's recent window, several
+     * live copies, a document the validator now refuses) would otherwise stay pending for good.
+     *
+     * Closed with outcome RELEASED and $meta (e.g. user_id, reason) plus released_at in the
+     * attempt's meta column (migration 004; skipped when the column is missing). Returns how many
+     * were closed. The next submission POSTs without a lookup and with the document's own issue
+     * time (never a reused one). Nothing is cancelled or asked of MyInvois.
+     *
+     * The caller does not hold the submission lock: it is taken for the moment of the release, and
+     * a submission in flight (or a lock kept after an ambiguous failure, until its TTL) refuses it
+     * with MyinvoisInFlightException. $preprod defaults to the parent's client (clientFor()).
+     *
+     * @throws MyinvoisInFlightException
+     */
+    public static function releasePendingAttempts(Model $parent, ?bool $preprod = null, array $meta = []) : int
+    {
+        $preprod ??= (bool) static::clientFor($parent)->getSettings('preprod');
+
+        if (! SubmitAttempts::pendingFor($parent, $preprod)) return 0;
+
+        $owner = SubmissionLock::acquire([$parent], $preprod);
+
+        try {
+            return SubmitAttempts::release($parent, $preprod, $meta);
+        }
+        finally {
+            SubmissionLock::release([$parent], $preprod, $owner);
+        }
     }
 
     /**
