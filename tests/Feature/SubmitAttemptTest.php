@@ -868,14 +868,114 @@ class SubmitAttemptTest extends TestCase
     }
 
     #[Test]
-    public function a_408_on_the_post_leaves_the_attempt_pending() : void
+    public function a_408_on_the_post_is_ambiguous_keeps_the_lock_and_the_attempt() : void
     {
         $order = Order::create();
         $this->post = fn () => Http::response([], 408);
 
-        $this->myinvois()->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice()]);
+        try {
+            $this->myinvois()->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice()]);
+            $this->fail('Expected the 408 to surface.');
+        }
+        catch (MyinvoisUnavailableException $e) {
+            $this->assertTrue($e->mayHaveReachedMyinvois());
+        }
 
         $this->assertTrue(Myinvois::hasPendingAttempt($order));
+
+        $this->expectException(MyinvoisInFlightException::class);
+        $this->myinvois()->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice()]);
+    }
+
+    // ---- second review of #14 -----------------------------------------
+
+    #[Test]
+    public function a_batch_partly_restored_then_throttled_sends_the_rest_on_retry() : void
+    {
+        Event::fake([SubmissionAccepted::class, SubmissionFailed::class]);
+        $a = OrgOrder::create();
+        $b = OrgOrder::create();
+        $this->pendingAttempt($a);
+        $this->travel(2)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry(['status' => 'Submitted'])]);
+        $this->post = fn () => Http::response([], 429, ['Retry-After' => '5']);
+
+        Queue::fake();
+        Myinvois::queueSubmission([DocumentFixture::invoice(), DocumentFixture::invoice(['number' => 'INV-0002'])], ['INV-0001' => $a, 'INV-0002' => $b]);
+        $job = Queue::pushed(SubmitDocuments::class)->first();
+        $job->withFakeQueueInteractions();
+        Queue::fake();
+
+        $job->handle();
+
+        $job->assertReleased(5);
+        Event::assertDispatched(SubmissionAccepted::class, fn ($e) => $e->submissionUid === 'SUBX');
+
+        $this->post = fn () => $this->accepted('UID2', 'INV-0002', 'SUB2');
+        $job->withFakeQueueInteractions();
+        $job->handle();
+
+        $posted = Http::recorded(fn ($request) => $request->method() === 'POST' && str_contains($request->url(), 'documentsubmissions'))->last()[0];
+        $this->assertSame(['INV-0002'], collect($posted['documents'])->pluck('codeNumber')->all());
+        Event::assertDispatched(SubmissionAccepted::class, fn ($e) => $e->submissionUid === 'SUB2' && $e->documentNumbers === ['INV-0002']);
+        Event::assertDispatchedTimes(SubmissionAccepted::class, 2);
+        Event::assertNotDispatched(SubmissionFailed::class);
+    }
+
+    #[Test]
+    public function an_adopted_row_keeps_lhdns_received_instant_in_a_non_utc_app() : void
+    {
+        $timezone = date_default_timezone_get();
+        date_default_timezone_set('Asia/Kuala_Lumpur');
+
+        try {
+            $order = Order::create();
+            $this->timedOut($order);
+            $this->travel(6)->minutes();
+            $this->recent = fn () => $this->recentPage([$this->entry()]);
+
+            $this->resubmit($order);
+
+            $this->assertSame('2026-11-10 10:00:05', MyinvoisDocument::sole()->created_at->utc()->toDateTimeString());
+        }
+        finally {
+            date_default_timezone_set($timezone);
+        }
+    }
+
+    #[Test]
+    public function a_match_with_a_status_the_package_does_not_know_is_not_taken_as_live() : void
+    {
+        $order = Order::create();
+        $attempt = $this->timedOut($order);
+        $this->travel(15)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry(['status' => 'Rejected'])]);
+        $this->post = fn () => $this->accepted();
+
+        $this->myinvois()->forParents(['INV-0001' => $order])->withoutPolling()->submitDocuments([DocumentFixture::invoice(['issued_at' => '2026-11-10 10:15:00'])]);
+
+        $this->assertSame(2, $this->posts());
+        $this->assertSame(MyinvoisSubmitAttempt::NOT_FOUND, $attempt->refresh()->outcome);
+        $this->assertSame('2026-01-15T09:30:00Z', $this->postedIssuedAt(), 'resent with the issue time reused, so DV302 catches a copy');
+    }
+
+    #[Test]
+    public function an_attempt_without_an_issue_time_matches_on_the_number_alone() : void
+    {
+        $order = OrgOrder::create();
+        $this->pendingAttempt($order)->update(['issued_at' => null]);
+        $this->travel(6)->minutes();
+        $this->recent = fn () => $this->recentPage([$this->entry(['dateTimeIssued' => '2026-02-01T00:00:00Z'])]);
+
+        try {
+            Myinvois::clientFor($order)->forParents(['INV-0001' => $order])->submitDocuments([DocumentFixture::invoice()]);
+            $this->fail('Expected recovery.');
+        }
+        catch (MyinvoisPendingAttemptException $e) {
+            $this->assertSame(MyinvoisPendingAttemptException::RECOVERED, $e->getReason());
+        }
+
+        $this->assertSame(0, $this->posts());
     }
 
     #[Test]
