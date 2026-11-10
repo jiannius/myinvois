@@ -27,14 +27,16 @@ use Jiannius\Myinvois\Myinvois;
  * The lookup, per document of a pending attempt:
  * 1. local rows: an unlinked row of that number in this environment, saved since the attempt
  *    (a pre-v1.5 caller linked rows only after submitDocuments() returned);
- * 2. LHDN: documents/recent (Sent, the document type, a submission window around the attempt),
- *    a bounded number of pages, matching internalId and the exact dateTimeIssued.
+ * 2. LHDN: documents/recent (Sent, per document type, one submission window covering every
+ *    pending attempt of that type), a bounded number of pages, matching internalId and the
+ *    exact dateTimeIssued.
  *
- * Then: one live (Submitted / Valid) match is adopted and nothing is sent; Invalid / Cancelled
- * matches only are recorded and the document is sent; several live matches, a failed lookup,
- * or no match within CHECK_MINUTES refuse; no match after that sends again, reusing the
- * attempt's issue time while it is under REUSE_MINUTES old (so LHDN's DV302 duplicate check
- * marks the copy invalid if the original was missed after all).
+ * Every document is decided before anything is written. Any refusal (several live matches,
+ * a failed lookup, no match within CHECK_MINUTES) refuses the whole call and changes nothing.
+ * Otherwise: a live (Submitted / Valid) match is adopted and that document is not sent again;
+ * Invalid / Cancelled matches only are recorded and the document is sent; no match after
+ * CHECK_MINUTES sends again, reusing the attempt's issue time while it is under REUSE_MINUTES
+ * old (so LHDN's DV302 duplicate check marks the copy invalid if the original was missed).
  */
 class SubmitAttempts
 {
@@ -44,15 +46,27 @@ class SubmitAttempts
     /** Minutes during which a resend reuses the attempt's issue time (LHDN's DV302 window is 2 hours). */
     public const REUSE_MINUTES = 120;
 
-    /** documents/recent pages read per lookup, and their size. */
+    /** documents/recent pages read per document type, and their size. */
     public const LOOKUP_PAGES = 5;
 
     public const PAGE_SIZE = 100;
 
-    /** The submission window searched, in minutes before and after the attempt. */
+    /** The submission window searched, in minutes before the first and after the last attempt. */
     public const WINDOW_BEFORE = 5;
 
     public const WINDOW_AFTER = 30;
+
+    /** Seconds added to a "still checking" wait, so the retry lands after the 10 minutes. */
+    public const CHECK_SLACK = 5;
+
+    protected static bool $available = false;
+
+    /**
+     * Submissions restored by the last recover(): submission uid => document numbers.
+     *
+     * @var array<string, array<int, string>>
+     */
+    protected array $recovered = [];
 
     public function __construct(protected Myinvois $client, protected bool $preprod)
     {
@@ -60,7 +74,8 @@ class SubmitAttempts
 
     public static function available() : bool
     {
-        return Schema::hasTable('myinvois_submit_attempts');
+        // remembered once true: the table does not go away at runtime
+        return static::$available = static::$available || Schema::connection((new MyinvoisSubmitAttempt)->getConnectionName())->hasTable('myinvois_submit_attempts');
     }
 
     /**
@@ -114,13 +129,16 @@ class SubmitAttempts
 
     /**
      * Close the attempts LHDN answered definitely: accepted, rejected, or a whole-submission
-     * error. A document the response does not mention stays pending.
+     * error. A document the response does not mention stays pending, and so does everything
+     * after a 408 (LHDN may still have taken the request).
      *
      * @param  Collection<int, MyinvoisSubmitAttempt>  $attempts
      */
     public static function closeAfterResponse(Collection $attempts, Response $api) : void
     {
         $json = $api->json();
+
+        if ($api->status() === 408) return;
 
         if ($api->failed()) {
             static::closeAll($attempts, MyinvoisSubmitAttempt::REJECTED);
@@ -157,126 +175,173 @@ class SubmitAttempts
     // ---- recovery ------------------------------------------------------
 
     /**
-     * Resolve the pending attempts of the parents before anything is sent. Returns the
-     * documents to send (with a reused issue time where it applies), or throws
-     * MyinvoisPendingAttemptException. Throttling, authentication and permission failures of
-     * the lookup are rethrown as they are: the POST would meet them too.
+     * Resolve the pending attempts of the parents before anything is sent, and return the
+     * documents still to send: without those whose earlier submission was restored, and with
+     * a reused issue time where it applies. recovered() then says what was restored.
+     *
+     * Throws MyinvoisPendingAttemptException when any document refuses (nothing is written
+     * then), or `recovered` when every document was restored (nothing left to send).
+     * Throttling, authentication and permission failures of the lookup are rethrown as they
+     * are, also before anything is written: the POST would meet them too.
      *
      * @param  array<int, array>  $documents
      * @param  iterable<int, Model>  $parents
+     * @param  array<string, mixed>  $parentKeys  the forParents() map, to tell which documents a restored parent owns
      * @return array<int, array>
      */
-    public function recover(array $documents, iterable $parents) : array
+    public function recover(array $documents, iterable $parents, array $parentKeys = []) : array
     {
-        $parents = collect($parents)->unique(fn ($parent) => $parent->getMorphClass().':'.$parent->getKey())->values();
+        $this->recovered = [];
+        $parents = collect($parents)->unique(fn ($parent) => $this->parentKey($parent))->values();
 
-        $pending = MyinvoisSubmitAttempt::query()
-            ->pending()
-            ->where('is_preprod', $this->preprod)
-            ->where(function ($query) use ($parents) {
-                foreach ($parents as $parent) {
-                    $query->orWhere(fn ($q) => $q->where('parent_type', $parent->getMorphClass())->where('parent_id', (string) $parent->getKey()));
-                }
-            })
-            ->orderBy('created_at')
-            ->get();
+        $pending = $this->attemptsOf($parents)->pending()->orderBy('created_at')->get();
 
-        $refusals = [];
-        $recovered = [];
+        if ($pending->isEmpty()) return $this->reuseIssueTimes($documents, $parents);
 
-        foreach ($pending->groupBy('document_number') as $number => $group) {
-            $outcome = $this->resolve((string) $number, $group);
+        // a base collection: an Eloquent one would filter only() / except() by model key
+        $groups = $pending->groupBy('document_number')->toBase();
 
-            if ($outcome[0] === 'refuse') $refusals[$outcome[1]][] = (string) $number;
-            if ($outcome[0] === 'recovered') $recovered[(string) $number] = $outcome[1];
-        }
+        // phase 1: decide every document, writing nothing
+        $local = $groups->map(fn ($group, $number) => $this->localRows((string) $number, $group));
+        $remote = $this->lookupAll($groups->filter(fn ($group, $number) => $local[$number]->isEmpty()));
 
-        if ($refusals) throw $this->refusal($refusals, $pending);
+        $decisions = $groups->map(fn ($group, $number) => $local[$number]->isNotEmpty()
+            ? $this->decideLocal($local[$number])
+            : $this->decideRemote($group, $remote[$number]));
 
-        if ($recovered) {
-            $numbers = array_keys($recovered);
+        $refusals = $decisions->filter(fn ($decision) => $decision['action'] === 'refuse');
 
+        if ($refusals->isNotEmpty()) throw $this->refusal($refusals, $groups);
+
+        // phase 2: apply them together
+        $model = MyinvoisDocument::$useModel;
+
+        (new $model)->getConnection()->transaction(fn () => MyinvoisDocumentObserver::deferEvents(function () use ($decisions, $groups, $local) {
+            foreach ($decisions as $number => $decision) {
+                $this->apply($decision, $groups[$number], $local[$number]);
+            }
+        }));
+
+        $this->recovered = $decisions
+            ->filter(fn ($decision) => $decision['live'])
+            ->groupBy(fn ($decision) => (string) $decision['uid'], preserveKeys: true)
+            ->map(fn ($decisions) => $decisions->keys()->map(fn ($number) => (string) $number)->values()->all())
+            ->all();
+
+        $restoredNumbers = $decisions->filter(fn ($decision) => $decision['live'])->keys()->map(fn ($number) => (string) $number)->all();
+
+        if (! $restoredNumbers) return $this->reuseIssueTimes($documents, $parents);
+
+        // a document whose parent now holds the restored submission is not sent again
+        $restoredParents = $pending->whereIn('document_number', $restoredNumbers)
+            ->map(fn ($attempt) => $attempt->parent_type.':'.$attempt->parent_id)
+            ->unique()->all();
+
+        $remaining = collect($documents)->reject(function ($document) use ($restoredNumbers, $restoredParents, $parentKeys) {
+            if (in_array((string) data_get($document, 'number'), $restoredNumbers, true)) return true;
+
+            foreach ($this->parentsOfDocument($document, $parentKeys) as $parent) {
+                if (in_array($this->parentKey($parent), $restoredParents, true)) return true;
+            }
+
+            return false;
+        })->values()->all();
+
+        if (! $remaining) {
             throw new MyinvoisPendingAttemptException(
-                implode(', ', $numbers).' was already accepted by MyInvois in an earlier attempt; its record has been restored.',
+                implode(', ', $restoredNumbers).' was already accepted by MyInvois in an earlier attempt; its record has been restored.',
                 MyinvoisPendingAttemptException::RECOVERED,
-                $this->references($pending->whereIn('document_number', $numbers)),
-                $numbers,
-                array_values(array_unique(array_filter($recovered))),
+                $this->references($pending->whereIn('document_number', $restoredNumbers)),
+                $restoredNumbers,
+                array_keys($this->recovered),
             );
         }
 
-        return $this->reuseIssueTimes($documents, $parents);
+        return $this->reuseIssueTimes($remaining, $parents);
     }
 
     /**
-     * @param  Collection<int, MyinvoisSubmitAttempt>  $group  the pending attempts of one document
-     * @return array{0: string, 1: ?string} ['recovered', submission uid] | ['refuse', reason] | ['send', null]
+     * Submissions the last recover() restored: submission uid => document numbers.
+     *
+     * @return array<string, array<int, string>>
      */
-    protected function resolve(string $number, Collection $group) : array
+    public function recovered() : array
     {
-        $first = $group->first();
+        return $this->recovered;
+    }
 
-        // 1. rows saved locally since the attempt
-        $local = $this->localRows($number, $group);
+    /**
+     * Local rows found: link them; a live one means the document is submitted.
+     *
+     * @return array{action: string, live: bool, uid: ?string, entry: ?array, reason: ?string}
+     */
+    protected function decideLocal(Collection $rows) : array
+    {
+        $live = $rows->first(fn ($row) => $row->status?->is(Status::SUBMITTED, Status::VALID));
 
-        if ($local->isNotEmpty()) {
-            $this->link($local, $group);
+        return [
+            'action' => 'link',
+            'live' => (bool) $live,
+            'uid' => ($live ?? $rows->first())->submission_uid,
+            'entry' => null,
+            'reason' => null,
+        ];
+    }
 
-            $live = $local->first(fn ($row) => $row->status?->is(Status::SUBMITTED, Status::VALID));
+    /**
+     * @param  Collection<int, array>|null  $matches  null when the lookup failed
+     * @return array{action: string, live: bool, uid: ?string, entry: ?array, reason: ?string}
+     */
+    protected function decideRemote(Collection $group, ?Collection $matches) : array
+    {
+        $decision = ['action' => 'refuse', 'live' => false, 'uid' => null, 'entry' => null, 'reason' => MyinvoisPendingAttemptException::LOOKUP_FAILED];
 
-            if ($live) {
-                $this->closeGroup($group, MyinvoisSubmitAttempt::ADOPTED, $live);
-
-                return ['recovered', $live->submission_uid];
-            }
-
-            $this->closeGroup($group, MyinvoisSubmitAttempt::FOUND_INVALID, $local->first());
-
-            return ['send', null];
-        }
-
-        // 2. LHDN
-        try {
-            $matches = $this->lookup($first);
-        }
-        catch (MyinvoisThrottledException|MyinvoisAuthenticationException|MyinvoisPermissionException $e) {
-            throw $e;
-        }
-        catch (MyinvoisException|LookupFailed) {
-            return ['refuse', MyinvoisPendingAttemptException::LOOKUP_FAILED];
-        }
+        if ($matches === null) return $decision;
 
         $statuses = $matches->map(fn ($entry) => Status::tryFrom(strtolower((string) data_get($entry, 'status'))));
 
-        if ($statuses->contains(null)) return ['refuse', MyinvoisPendingAttemptException::LOOKUP_FAILED];
+        if ($statuses->contains(null)) return $decision;
 
         $live = $matches->filter(fn ($entry, $i) => $statuses[$i]->is(Status::SUBMITTED, Status::VALID));
 
-        if ($live->count() > 1) return ['refuse', MyinvoisPendingAttemptException::MULTIPLE_MATCHES];
+        if ($live->count() > 1) return [...$decision, 'reason' => MyinvoisPendingAttemptException::MULTIPLE_MATCHES];
 
         if ($live->count() === 1) {
             $entry = $live->first();
-            $rows = $this->adopt($group, $entry);
-            $this->closeGroup($group, MyinvoisSubmitAttempt::ADOPTED, $rows->first());
 
-            return ['recovered', (string) data_get($entry, 'submissionUID')];
+            return ['action' => 'adopt', 'live' => true, 'uid' => (string) data_get($entry, 'submissionUID'), 'entry' => $entry, 'reason' => null];
         }
 
         if ($matches->isNotEmpty()) {
             $entry = $matches->sortByDesc(fn ($entry) => (string) data_get($entry, 'dateTimeReceived'))->first();
-            $rows = $this->adopt($group, $entry);
-            $this->closeGroup($group, MyinvoisSubmitAttempt::FOUND_INVALID, $rows->first());
 
-            return ['send', null];
+            return ['action' => 'adopt', 'live' => false, 'uid' => (string) data_get($entry, 'submissionUID'), 'entry' => $entry, 'reason' => null];
         }
 
-        if ($first->created_at->gt(now()->subMinutes(static::CHECK_MINUTES))) {
-            return ['refuse', MyinvoisPendingAttemptException::STILL_CHECKING];
+        if ($group->first()->created_at->gt(now()->subMinutes(static::CHECK_MINUTES))) {
+            return [...$decision, 'reason' => MyinvoisPendingAttemptException::STILL_CHECKING];
+        }
+
+        return ['action' => 'not_found', 'live' => false, 'uid' => null, 'entry' => null, 'reason' => null];
+    }
+
+    protected function apply(array $decision, Collection $group, Collection $local) : void
+    {
+        if ($decision['action'] === 'link') {
+            $this->link($local, $group);
+            $this->closeGroup($group, $decision['live'] ? MyinvoisSubmitAttempt::ADOPTED : MyinvoisSubmitAttempt::FOUND_INVALID, $local->first());
+
+            return;
+        }
+
+        if ($decision['action'] === 'adopt') {
+            $rows = $this->adopt($group, $decision['entry']);
+            $this->closeGroup($group, $decision['live'] ? MyinvoisSubmitAttempt::ADOPTED : MyinvoisSubmitAttempt::FOUND_INVALID, $rows->first());
+
+            return;
         }
 
         $this->closeGroup($group, MyinvoisSubmitAttempt::NOT_FOUND);
-
-        return ['send', null];
     }
 
     /**
@@ -287,16 +352,9 @@ class SubmitAttempts
      */
     protected function localRows(string $number, Collection $group) : Collection
     {
-        $model = MyinvoisDocument::$useModel;
         $first = $group->first();
 
-        return (new $model)->newQueryWithoutScopes()
-            ->when(
-                $this->preprod,
-                fn ($q) => $q->where('is_preprod', true),
-                fn ($q) => $q->where(fn ($q) => $q->where('is_preprod', false)->orWhereNull('is_preprod')),
-            )
-            ->where(fn ($q) => $q->where('is_inbound', false)->orWhereNull('is_inbound'))
+        return $this->documentQuery()
             ->where('created_at', '>=', $first->created_at)
             ->where(fn ($q) => $first->is_consolidate
                 ? $q->where('consolidate_number', $number)
@@ -319,33 +377,69 @@ class SubmitAttempts
      */
     protected function link(Collection $rows, Collection $group) : void
     {
-        MyinvoisDocumentObserver::deferEvents(function () use ($rows, $group) {
-            foreach ($rows as $row) {
-                if ($row->parent_id !== null) continue;
+        foreach ($rows as $row) {
+            if ($row->parent_id !== null) continue;
 
-                $attempt = $group->first(fn ($attempt) => in_array($row->document_number, (array) $attempt->row_numbers, true))
-                    ?? ($group->count() === 1 ? $group->first() : null);
+            $attempt = $group->first(fn ($attempt) => in_array($row->document_number, (array) $attempt->row_numbers, true))
+                ?? ($group->count() === 1 ? $group->first() : null);
 
-                if ($attempt) $row->update(['parent_type' => $attempt->parent_type, 'parent_id' => $attempt->parent_id]);
-            }
-        });
+            if ($attempt) $row->update(['parent_type' => $attempt->parent_type, 'parent_id' => $attempt->parent_id]);
+        }
     }
 
     /**
-     * The documents/recent entries of the attempt's document: internalId and the exact issue time.
+     * Ask documents/recent once per document type for every group that needs it.
      *
+     * @param  Collection<string, Collection<int, MyinvoisSubmitAttempt>>  $groups  document number => attempts
+     * @return array<string, Collection<int, array>|null>  document number => matches, null when the lookup failed
+     *
+     * @throws MyinvoisThrottledException|MyinvoisAuthenticationException|MyinvoisPermissionException
+     */
+    protected function lookupAll(Collection $groups) : array
+    {
+        $results = [];
+
+        foreach ($groups->groupBy(fn ($group) => (string) $group->first()->document_type, preserveKeys: true) as $type => $byNumber) {
+            try {
+                $entries = $this->recentDocuments($type, $byNumber);
+            }
+            catch (MyinvoisThrottledException|MyinvoisAuthenticationException|MyinvoisPermissionException $e) {
+                throw $e;
+            }
+            catch (MyinvoisException|LookupFailed) {
+                foreach ($byNumber as $number => $group) $results[(string) $number] = null;
+
+                continue;
+            }
+
+            foreach ($byNumber as $number => $group) {
+                $issued = $group->first()->issued_at ? Carbon::parse($group->first()->issued_at) : null;
+
+                // an attempt without an issue time cannot be matched: never guess
+                $results[(string) $number] = $issued === null ? null : $entries
+                    ->filter(fn ($entry) => (string) data_get($entry, 'internalId') === (string) $number
+                        && $this->sameInstant(data_get($entry, 'dateTimeIssued'), $issued))
+                    ->values();
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Every documents/recent entry of a type in a window covering the groups' attempts.
+     *
+     * @param  Collection<string, Collection<int, MyinvoisSubmitAttempt>>  $groups
      * @return Collection<int, array>
      *
      * @throws LookupFailed|MyinvoisException
      */
-    protected function lookup(MyinvoisSubmitAttempt $attempt) : Collection
+    protected function recentDocuments(string $type, Collection $groups) : Collection
     {
-        if (! $attempt->issued_at) throw new LookupFailed('The attempt has no issue time to match.');
-
-        $issued = Carbon::parse($attempt->issued_at);
-        $from = $attempt->created_at->copy()->subMinutes(static::WINDOW_BEFORE);
-        $to = $attempt->created_at->copy()->addMinutes(static::WINDOW_AFTER)->min(now());
-        $matches = collect();
+        $from = $groups->map(fn ($group) => $this->windowStart($group))->min();
+        $last = $groups->flatten(1)->max('created_at');
+        $to = $last->copy()->addMinutes(static::WINDOW_AFTER)->min(now());
+        $entries = collect();
 
         for ($page = 1; $page <= static::LOOKUP_PAGES; $page++) {
             $api = $this->client->callApi(
@@ -353,10 +447,10 @@ class SubmitAttempts
                 data: array_filter([
                     'pageNo' => $page,
                     'pageSize' => static::PAGE_SIZE,
-                    'submissionDateFrom' => $from->utc()->format('Y-m-d\TH:i:s\Z'),
-                    'submissionDateTo' => $to->utc()->format('Y-m-d\TH:i:s\Z'),
+                    'submissionDateFrom' => $from->copy()->utc()->format('Y-m-d\TH:i:s\Z'),
+                    'submissionDateTo' => $to->copy()->utc()->format('Y-m-d\TH:i:s\Z'),
                     'InvoiceDirection' => 'Sent',
-                    'documentType' => $attempt->document_type,
+                    'documentType' => $type,
                 ], fn ($value) => $value !== null && $value !== ''),
                 perMinute: 12,
             );
@@ -368,18 +462,39 @@ class SubmitAttempts
                 throw new LookupFailed('documents/recent did not answer with a result list.');
             }
 
-            foreach ($result as $entry) {
-                if ((string) data_get($entry, 'internalId') !== $attempt->document_number) continue;
-                if (! $this->sameInstant(data_get($entry, 'dateTimeIssued'), $issued)) continue;
+            $entries->push(...array_values($result));
 
-                $matches->push($entry);
-            }
-
-            if ($page >= (int) (data_get($json, 'metadata.totalPages') ?? 1)) return $matches->values();
+            if ($page >= (int) (data_get($json, 'metadata.totalPages') ?? 1)) return $entries;
         }
 
         // more pages than we read: what we did not see could hold the match
         throw new LookupFailed('documents/recent has more pages than the lookup reads.');
+    }
+
+    /**
+     * Where to start looking for a group: before its first attempt, or before the first
+     * attempt that sent the same issue time (a resend reusing it), whose original may have
+     * landed late.
+     */
+    protected function windowStart(Collection $group) : Carbon
+    {
+        $first = $group->first();
+        $start = $first->created_at;
+
+        if ($first->issued_at) {
+            $earliest = MyinvoisSubmitAttempt::query()
+                ->where('is_preprod', $this->preprod)
+                ->where('document_number', $first->document_number)
+                ->where('issued_at', $first->issued_at)
+                ->where('parent_type', $first->parent_type)
+                ->where('parent_id', $first->parent_id)
+                ->where('created_at', '>=', $first->created_at->copy()->subMinutes(static::REUSE_MINUTES))
+                ->min('created_at');
+
+            if ($earliest) $start = Carbon::parse($earliest)->min($start);
+        }
+
+        return $start->copy()->subMinutes(static::WINDOW_BEFORE);
     }
 
     protected function sameInstant($value, Carbon $issued) : bool
@@ -397,7 +512,8 @@ class SubmitAttempts
     /**
      * Write the rows of a document LHDN holds, in the usual shape (one per line item for a
      * consolidated document), linked to the attempts' parents, created at LHDN's received
-     * time so the 72-hour cancellation window is not overstated.
+     * time so the 72-hour cancellation window is not overstated. Rows of that document uuid
+     * that already exist (unlinked, or a second copy of this job) are linked, not duplicated.
      *
      * @param  array<string, mixed>  $entry  a documents/recent item
      * @return Collection<int, MyinvoisDocument>
@@ -408,29 +524,44 @@ class SubmitAttempts
         $number = $group->first()->document_number;
         $consolidated = (bool) $group->first()->is_consolidate;
         $received = $this->received($entry);
+        $uuid = data_get($entry, 'uuid');
 
-        return MyinvoisDocumentObserver::deferEvents(function () use ($model, $group, $entry, $number, $consolidated, $received) {
-            $rows = collect();
+        $existing = $uuid ? $this->documentQuery()->where('document_uuid', $uuid)->orderBy('id')->get() : collect();
+        $rows = collect();
 
-            foreach ($group as $attempt) {
-                foreach ((array) ($attempt->row_numbers ?: [$number]) as $rowNumber) {
-                    $rows->push($model::create([
-                        'document_uuid' => data_get($entry, 'uuid'),
-                        'submission_uid' => data_get($entry, 'submissionUID'),
-                        'document_number' => $consolidated ? $rowNumber : $number,
-                        'consolidate_number' => $consolidated ? $number : null,
-                        'status' => strtolower((string) data_get($entry, 'status')),
-                        'is_preprod' => $this->preprod,
-                        'response' => $entry,
-                        'parent_type' => $attempt->parent_type,
-                        'parent_id' => $attempt->parent_id,
-                        'created_at' => $received,
-                    ]));
+        foreach ($group as $attempt) {
+            foreach ((array) ($attempt->row_numbers ?: [$number]) as $rowNumber) {
+                $rowNumber = $consolidated ? $rowNumber : $number;
+
+                $row = $existing->first(fn ($row) => $row->document_number === $rowNumber
+                    && ($row->parent_id === null || ($row->parent_type === $attempt->parent_type && (string) $row->parent_id === $attempt->parent_id)));
+
+                if ($row) {
+                    $existing = $existing->reject(fn ($other) => $other->is($row));
+
+                    if ($row->parent_id === null) $row->update(['parent_type' => $attempt->parent_type, 'parent_id' => $attempt->parent_id]);
+
+                    $rows->push($row);
+
+                    continue;
                 }
-            }
 
-            return $rows;
-        });
+                $rows->push($model::create([
+                    'document_uuid' => $uuid,
+                    'submission_uid' => data_get($entry, 'submissionUID'),
+                    'document_number' => $rowNumber,
+                    'consolidate_number' => $consolidated ? $number : null,
+                    'status' => strtolower((string) data_get($entry, 'status')),
+                    'is_preprod' => $this->preprod,
+                    'response' => $entry,
+                    'parent_type' => $attempt->parent_type,
+                    'parent_id' => $attempt->parent_id,
+                    'created_at' => $received,
+                ]));
+            }
+        }
+
+        return $rows;
     }
 
     protected function received(array $entry) : Carbon
@@ -462,16 +593,8 @@ class SubmitAttempts
     protected function reuseIssueTimes(array $documents, Collection $parents) : array
     {
         foreach ($documents as $i => $document) {
-            $number = (string) data_get($document, 'number');
-
-            $latest = MyinvoisSubmitAttempt::query()
-                ->where('is_preprod', $this->preprod)
-                ->where('document_number', $number)
-                ->where(function ($query) use ($parents) {
-                    foreach ($parents as $parent) {
-                        $query->orWhere(fn ($q) => $q->where('parent_type', $parent->getMorphClass())->where('parent_id', (string) $parent->getKey()));
-                    }
-                })
+            $latest = $this->attemptsOf($parents)
+                ->where('document_number', (string) data_get($document, 'number'))
                 ->latest('created_at')
                 ->latest('id')
                 ->first();
@@ -487,19 +610,26 @@ class SubmitAttempts
     }
 
     /**
-     * @param  array<string, array<int, string>>  $refusals  reason => document numbers
+     * @param  Collection<string, array>  $refusals  document number => decision
      */
-    protected function refusal(array $refusals, Collection $pending) : MyinvoisPendingAttemptException
+    protected function refusal(Collection $refusals, Collection $groups) : MyinvoisPendingAttemptException
     {
         foreach ([
             MyinvoisPendingAttemptException::MULTIPLE_MATCHES,
             MyinvoisPendingAttemptException::LOOKUP_FAILED,
             MyinvoisPendingAttemptException::STILL_CHECKING,
         ] as $reason) {
-            if (! isset($refusals[$reason])) continue;
+            $numbers = $refusals->filter(fn ($decision) => $decision['reason'] === $reason)->keys()->map(fn ($number) => (string) $number)->values()->all();
 
-            $numbers = $refusals[$reason];
+            if (! $numbers) continue;
+
             $list = implode(', ', $numbers);
+            $attempts = $groups->only($numbers)->flatten(1);
+
+            // still checking: the seconds until the youngest refused attempt is CHECK_MINUTES old
+            $retryAfter = $reason === MyinvoisPendingAttemptException::STILL_CHECKING
+                ? max(1, (int) now()->diffInSeconds($attempts->max('created_at')->copy()->addMinutes(static::CHECK_MINUTES), true)) + static::CHECK_SLACK
+                : null;
 
             return new MyinvoisPendingAttemptException(
                 match ($reason) {
@@ -508,12 +638,63 @@ class SubmitAttempts
                     default => "An earlier submission of {$list} may have reached MyInvois. Still checking; please try again in a few minutes.",
                 },
                 $reason,
-                $this->references($pending->whereIn('document_number', $numbers)),
+                $this->references($attempts),
                 $numbers,
+                retryAfter: $retryAfter,
             );
         }
 
         throw new \LogicException('No refusal to report.');
+    }
+
+    /**
+     * The parents a document's rows belong to, from the forParents() map.
+     *
+     * @return array<int, Model>
+     */
+    protected function parentsOfDocument(array $document, array $parentKeys) : array
+    {
+        try {
+            return collect(ParentRows::resolve([$document], $parentKeys))->pluck('parent')->filter(fn ($parent) => $parent instanceof Model)->all();
+        }
+        catch (\InvalidArgumentException) {
+            return [];
+        }
+    }
+
+    /**
+     * Attempts of the parents in this environment.
+     */
+    protected function attemptsOf(Collection $parents)
+    {
+        return MyinvoisSubmitAttempt::query()
+            ->where('is_preprod', $this->preprod)
+            ->where(function ($query) use ($parents) {
+                foreach ($parents as $parent) {
+                    $query->orWhere(fn ($q) => $q->where('parent_type', $parent->getMorphClass())->where('parent_id', (string) $parent->getKey()));
+                }
+            });
+    }
+
+    /**
+     * Outbound myinvois_documents rows in this environment.
+     */
+    protected function documentQuery()
+    {
+        $model = MyinvoisDocument::$useModel;
+
+        return (new $model)->newQueryWithoutScopes()
+            ->when(
+                $this->preprod,
+                fn ($q) => $q->where('is_preprod', true),
+                fn ($q) => $q->where(fn ($q) => $q->where('is_preprod', false)->orWhereNull('is_preprod')),
+            )
+            ->where(fn ($q) => $q->where('is_inbound', false)->orWhereNull('is_inbound'));
+    }
+
+    protected function parentKey(Model $parent) : string
+    {
+        return $parent->getMorphClass().':'.$parent->getKey();
     }
 
     /**

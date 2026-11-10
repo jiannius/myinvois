@@ -41,6 +41,16 @@ class MyinvoisSubmitAttempt extends Model
 
     protected $guarded = [];
 
+    /**
+     * The connection attempts are written on: `services.myinvois.attempts_connection`, else
+     * the default. Point it at a second connection to the same database when submissions run
+     * inside a transaction the caller may roll back, so a pending attempt survives it.
+     */
+    public function getConnectionName()
+    {
+        return config('services.myinvois.attempts_connection') ?: parent::getConnectionName();
+    }
+
     protected $casts = [
         'is_preprod' => 'boolean',
         'is_consolidate' => 'boolean',

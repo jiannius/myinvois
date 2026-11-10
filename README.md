@@ -265,7 +265,7 @@ The submission events carry `parents` (morph class + key, never models), `docume
 | `rejected` | LHDN refused some or all documents in the POST. |
 | `invalid` | LHDN accepted, then marked the documents invalid after validating. `errors` are LHDN's reasons (the row's `getErrors()`), read from the document details: an INVALID outcome costs one extra `documents/{uuid}/details` call per document (a consolidated e-invoice's rows share one). If that call fails or is rate limited the event still fires, with `errors` empty. |
 | `in_flight` | Another submission holds the lock, or the parent is already `submitted` / `valid`. |
-| `pending` | An earlier attempt may have reached LHDN unrecorded, and the lookup refused to resend: still checking, MyInvois could not be checked, or several live matches. `errors` says which. Nothing was sent. See [Recovering a submission that wasn't recorded](#recovering-a-submission-that-wasnt-recorded). |
+| `pending` | An earlier attempt may have reached LHDN unrecorded, and the lookup refused to resend: several live matches, or MyInvois still could not be checked after three retries (the job waits out "still checking" by itself). `errors` says which. Nothing was sent. See [Recovering a submission that wasn't recorded](#recovering-a-submission-that-wasnt-recorded). |
 | `unavailable` | LHDN or its token endpoint stayed down through every retry. Nothing was sent. |
 | `environment` | The client resolved on the worker is not the environment the job was queued for. Submit again. |
 | `error` | Non-retryable: rejected credentials, a permission error, a deleted parent, a bug. |
@@ -300,31 +300,35 @@ A submission can reach LHDN without anyone recording it. The POST times out afte
 
 With `forParents()` or `queueSubmission()`, the package records a **submit attempt** (table `myinvois_submit_attempts`, run the migrations) per document and parent right before the POST leaves.
 
-- **Closed** once LHDN answers definitely: rows saved, `rejectedDocuments`, a whole-submission 4xx, or a token / 401 / 403 / 429 failure.
-- **Left pending** after a timeout, a 5xx or a dead process.
+- **Closed** once LHDN answers definitely: rows saved, `rejectedDocuments`, a whole-submission 4xx (except 408), or a token / 401 / 403 / 429 failure.
+- **Left pending** after a timeout, a 5xx, a 408 or a dead process.
 
 The next submission of that parent looks the document up before sending anything:
 
 1. **Local first.** An unlinked `myinvois_documents` row of that number, in that environment, saved since the attempt, is linked to the parent.
-2. **Then LHDN.** It calls `documents/recent` (`InvoiceDirection=Sent`, the document type, a submission window from 5 minutes before the attempt to 30 minutes after), reading up to 5 pages of 100. A match is the same `internalId` and the exact same `dateTimeIssued`.
+2. **Then LHDN.** It calls `documents/recent` once per document type for the whole batch (`InvoiceDirection=Sent`, a submission window from 5 minutes before the first attempt to 30 minutes after the last), reading up to 5 pages of 100. A match is the same `internalId` and the exact same `dateTimeIssued`. When a resend reused the issue time, the window starts at the first attempt that sent it, in case the original landed late.
+
+Every document of the batch is decided before anything is written. If any document is refused, the whole call is refused and nothing changes.
 
 | Lookup result | What happens |
 |---|---|
-| One `Submitted` / `Valid` match | Its rows are written (linked, one per line for a consolidated document, `created_at` = LHDN's received time). Nothing is sent. `MyinvoisPendingAttemptException` (`recovered`); the queued job fires `SubmissionAccepted` and polls instead. |
+| One `Submitted` / `Valid` match | Its rows are written (linked, one per line for a consolidated document, `created_at` = LHDN's received time; a row of that uuid that already exists is linked instead). That document is not sent again. The rest of the batch is sent as usual, and `recoveredSubmissions()` on the client lists what was restored (submission uid => document numbers). When nothing is left to send, `MyinvoisPendingAttemptException` (`recovered`) is thrown instead. The queued job fires `SubmissionAccepted` and polls for each restored submission. |
 | Only `Invalid` / `Cancelled` matches | The newest is recorded as a row, the attempt is closed, and the document is sent. |
 | Several live matches | Refused (`multiple_matches`), naming the number. Check MyInvois and cancel the extra one; the package never cancels on its own. |
 | The lookup fails (outage, error answer, more pages than it reads) | Refused (`lookup_failed`). The attempt stays pending. |
 | No match, attempt under 10 minutes old | Refused (`still_checking`). Try again later. |
 | No match, attempt 10 minutes old or more | The attempt is closed and the document is sent. Under 2 hours it reuses the attempt's issue time, so if the original was missed after all, DV302 marks the copy invalid instead of creating a second live e-invoice. |
 
-Every refusal is a `MyinvoisPendingAttemptException`, a subclass of `MyinvoisInFlightException`, thrown before anything is sent. `getReason()` is one of `still_checking`, `lookup_failed`, `multiple_matches` or `recovered`; `getDocumentNumbers()` / `getParentReferences()` say which. The queued job reports the first three as `SubmissionFailed` with reason `pending`. A rate-limit, authentication or permission failure during the lookup is thrown as itself.
+Every refusal is a `MyinvoisPendingAttemptException`, a subclass of `MyinvoisInFlightException`, thrown before anything is sent. `getReason()` is one of `still_checking`, `lookup_failed`, `multiple_matches` or `recovered`; `getDocumentNumbers()` / `getParentReferences()` say which, and for `still_checking` `getRetryAfter()` gives the seconds until the lookup can decide. A rate-limit, authentication or permission failure during the lookup is thrown as itself.
+
+The queued job waits instead of failing: on `still_checking` it releases itself until the attempt is 10 minutes old, and on `lookup_failed` it retries after 30, 60 and 120 seconds. Only `multiple_matches`, or a lookup still failing after those retries, fires `SubmissionFailed` with reason `pending`.
 
 **Ask before editing.** `Myinvois::hasPendingAttempt($parent)` (or `$parent->hasPendingMyinvoisAttempt()` from the trait) is `true` while an attempt is pending in the parent's environment. Lock edits and voids meanwhile: the next submission resolves it.
 
 Notes:
 
 - A plain `submitDocuments()` without parents records no attempt.
-- Don't call `submitDocuments()` inside a database transaction you might roll back: the attempt row would roll back with it.
+- Don't call `submitDocuments()` inside a database transaction you might roll back: the attempt row would roll back with it. If you must, set `services.myinvois.attempts_connection` to a second connection to the same database, so attempts are written outside your transaction.
 - `MyinvoisFake` records no attempts (it cannot time out).
 
 ## Status sync

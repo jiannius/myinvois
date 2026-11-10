@@ -118,6 +118,14 @@ class Myinvois
     protected $attempts;
 
     /**
+     * Submissions the last submitDocuments() restored instead of sending (an earlier attempt
+     * LHDN had accepted): submission uid => document numbers.
+     *
+     * @var array<string, array<int, string>>
+     */
+    protected array $recovered = [];
+
+    /**
      * Swap the `myinvois` container binding for an in-memory fake (no network,
      * no signing, no sleeping). Host-app code calling app('myinvois')->... then
      * hits the fake. Returns it so tests can configure and assert against it.
@@ -221,6 +229,18 @@ class Myinvois
         $this->beforePost = $callback;
 
         return $this;
+    }
+
+    /**
+     * Submissions the last submitDocuments() found already accepted by MyInvois (an earlier
+     * attempt that timed out or crashed) and restored instead of sending: submission uid =>
+     * document numbers. Their rows are written and linked; the rest of the batch was sent.
+     *
+     * @return array<string, array<int, string>>
+     */
+    public function recoveredSubmissions() : array
+    {
+        return $this->recovered;
     }
 
     /**
@@ -979,6 +999,7 @@ class Myinvois
         $owner = $this->lockOwner;
         $this->postStarted = false;
         $this->attempts = collect();
+        $this->recovered = [];
 
         try {
             $pkey = $this->getSettings('private_key');
@@ -1004,10 +1025,21 @@ class Myinvois
                 if ($owner) SubmissionLock::ensure($parents, $preprod, $owner);
                 else $owner = SubmissionLock::acquire($parents, $preprod);
 
-                // an earlier POST that may have reached LHDN unrecorded: look it up first
-                if ($recordsAttempts) $documents = (new SubmitAttempts($this, $preprod))->recover($documents, $parents);
+                // an earlier POST that may have reached LHDN unrecorded: look it up first. A
+                // restored document is dropped from the batch (and its parent then holds a
+                // SUBMITTED / VALID row, so only the parents still to send are checked).
+                if ($recordsAttempts) {
+                    $recovery = new SubmitAttempts($this, $preprod);
 
-                SubmissionLock::assertSubmittable($parents, $preprod);
+                    try {
+                        $documents = $recovery->recover($documents, $parents, $this->parents);
+                    }
+                    finally {
+                        $this->recovered = $recovery->recovered();
+                    }
+                }
+
+                SubmissionLock::assertSubmittable($this->parentsOf($documents), $preprod);
             }
             catch (\Throwable $e) {
                 // only frees locks this owner holds; a lock someone else took is left alone
@@ -1078,6 +1110,11 @@ class Myinvois
             $myinvoisDocuments = $this->persistMyinvoisDocuments($api->json(), $documents);
 
             $keepLock = false;
+
+            // the rows are saved: closed before the lock is freed, so a submission waiting on
+            // the lock finds them closed. A failure to close is reported and leaves them
+            // pending; the next submission finds the rows and closes them then.
+            $this->closeAttempts(fn ($attempts) => SubmitAttempts::closeAfterResponse($attempts, $api));
         }
         catch (\Throwable $e) {
             // a plain \Exception is a configuration error (missing client id / secret), thrown
@@ -1093,10 +1130,6 @@ class Myinvois
         finally {
             if ($owner && ! $keepLock) SubmissionLock::release($parents, $preprod, $owner);
         }
-
-        // the rows are saved: a failure to close an attempt leaves it pending, and the next
-        // submission finds the rows and closes it then
-        $this->closeAttempts(fn ($attempts) => SubmitAttempts::closeAfterResponse($attempts, $api));
 
         if ($myinvoisDocuments) {
             if ($this->polls) $this->pollAfterSubmit(data_get($api->json(), 'submissionUid'));

@@ -30,6 +30,7 @@ class MyinvoisPendingAttemptException extends MyinvoisInFlightException
      * @param  array<int, array{type: string, id: mixed}>  $references
      * @param  array<int, string>  $documentNumbers
      * @param  array<int, string>  $submissionUids  for `recovered`: the submissions restored
+     * @param  int|null  $retryAfter  for `still_checking`: seconds until the lookup can decide
      */
     public function __construct(
         string $message,
@@ -37,6 +38,7 @@ class MyinvoisPendingAttemptException extends MyinvoisInFlightException
         array $references = [],
         protected array $documentNumbers = [],
         protected array $submissionUids = [],
+        protected ?int $retryAfter = null,
     ) {
         parent::__construct($message, $references);
     }
@@ -60,5 +62,14 @@ class MyinvoisPendingAttemptException extends MyinvoisInFlightException
     public function getSubmissionUids() : array
     {
         return $this->submissionUids;
+    }
+
+    /**
+     * For `still_checking`: the seconds until the attempt is old enough for the lookup to
+     * decide (resend or adopt). Null otherwise.
+     */
+    public function getRetryAfter() : ?int
+    {
+        return $this->retryAfter;
     }
 }
