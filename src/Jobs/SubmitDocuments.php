@@ -156,7 +156,9 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
         $this->runId = bin2hex(random_bytes(8));
         $this->postingSet = false;
         $this->superseded = false;
-        $this->recoveredNumbers = [];
+
+        // documents an earlier run of this job restored (and announced) are not sent again
+        $this->recoveredNumbers = array_values(array_map('strval', (array) $this->store()->get($this->restoredKey(), [])));
 
         [$state, $detail] = $this->claimRun();
 
@@ -254,6 +256,9 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
+        // everything was restored by an earlier run (and announced then): nothing left to send
+        if (! $this->documentsToSend()) return;
+
         try {
             try {
                 // forParents() also refuses parents that resolve to more than one client
@@ -261,7 +266,7 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
                     ->forParents($models, $this->lockOwner)
                     ->withoutPolling()
                     ->beforePost(fn () => $this->postingHook())
-                    ->submitDocuments($this->documents);
+                    ->submitDocuments($this->documentsToSend());
             }
             finally {
                 // documents whose earlier submission LHDN had accepted are restored, not sent:
@@ -448,16 +453,64 @@ class SubmitDocuments implements ShouldBeEncrypted, ShouldQueue
      */
     protected function announceRecovered(Myinvois $client) : void
     {
-        foreach ($client->recoveredSubmissions() as $uid => $documentNumbers) {
-            $this->recoveredNumbers = [...$this->recoveredNumbers, ...array_map('strval', $documentNumbers)];
+        try {
+            $restored = $client->recoveredSubmissions();
 
-            $numbers = ($this->documentModel())::query()
-                ->where('submission_uid', $uid)
-                ->pluck('document_number')
-                ->filter()->unique()->values()->all();
+            if (! $restored) return;
 
-            if ($numbers) $this->announceAccepted($numbers, (string) $uid);
+            foreach ($restored as $documentNumbers) {
+                $this->recoveredNumbers = [...$this->recoveredNumbers, ...array_map('strval', $documentNumbers)];
+            }
+
+            // a retry of this job (a 429 on the rest of the batch) must not send them again
+            $this->store()->put($this->restoredKey(), array_values(array_unique($this->recoveredNumbers)), static::SETTLED_SECONDS);
+
+            foreach ($restored as $uid => $documentNumbers) {
+                $numbers = ($this->documentModel())::query()
+                    ->where('submission_uid', $uid)
+                    ->pluck('document_number')
+                    ->filter()->unique()->values()->all();
+
+                if ($numbers) $this->announceAccepted($numbers, (string) $uid);
+            }
         }
+        catch (Throwable $e) {
+            // runs in a finally: never mask what submitDocuments() threw
+            report($e);
+        }
+    }
+
+    /**
+     * The job's documents without those restored by this job (and any other document of a
+     * restored parent: that parent now holds the restored submission).
+     *
+     * @return array<int, array>
+     */
+    protected function documentsToSend() : array
+    {
+        if (! $this->recoveredNumbers) return $this->documents;
+
+        $restoredParents = collect($this->entries())
+            ->filter(fn ($entry) => in_array((string) $entry['document'], $this->recoveredNumbers, true))
+            ->pluck('parent')->filter()
+            ->map(fn ($reference) => $reference['type'].':'.$reference['id'])
+            ->unique()->all();
+
+        $blocked = collect($this->entries())
+            ->filter(fn ($entry) => $entry['parent'] && in_array($entry['parent']['type'].':'.$entry['parent']['id'], $restoredParents, true))
+            ->pluck('document')->map(fn ($number) => (string) $number)
+            ->merge($this->recoveredNumbers)
+            ->unique()->all();
+
+        return collect($this->documents)
+            ->reject(fn ($document) => in_array((string) data_get($document, 'number'), $blocked, true))
+            ->values()
+            ->all();
+    }
+
+    protected function restoredKey() : string
+    {
+        return 'myinvois:submit-restored:'.$this->lockOwner;
     }
 
     /**

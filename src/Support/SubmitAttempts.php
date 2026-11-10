@@ -98,6 +98,12 @@ class SubmitAttempts
      */
     public function record(array $documents, array $entries, array $issued) : Collection
     {
+        // all or none: a half-written set would leave a parent pending for nothing
+        return (new MyinvoisSubmitAttempt)->getConnection()->transaction(fn () => $this->createAttempts($documents, $entries, $issued));
+    }
+
+    protected function createAttempts(array $documents, array $entries, array $issued) : Collection
+    {
         $attempts = collect();
 
         foreach ($documents as $document) {
@@ -216,11 +222,20 @@ class SubmitAttempts
         // phase 2: apply them together
         $model = MyinvoisDocument::$useModel;
 
-        (new $model)->getConnection()->transaction(fn () => MyinvoisDocumentObserver::deferEvents(function () use ($decisions, $groups, $local) {
+        // the rows in one transaction; the attempts are closed only once it committed (they
+        // may live on another connection): a crash in between leaves them pending, and the
+        // next submission finds the rows locally
+        $closes = (new $model)->getConnection()->transaction(fn () => MyinvoisDocumentObserver::deferEvents(function () use ($decisions, $groups, $local) {
+            $closes = [];
+
             foreach ($decisions as $number => $decision) {
-                $this->apply($decision, $groups[$number], $local[$number]);
+                $closes[] = $this->apply($decision, $groups[$number], $local[$number]);
             }
+
+            return $closes;
         }));
+
+        foreach ($closes as $close) $close();
 
         $this->recovered = $decisions
             ->filter(fn ($decision) => $decision['live'])
@@ -298,9 +313,21 @@ class SubmitAttempts
 
         if ($matches === null) return $decision;
 
-        $statuses = $matches->map(fn ($entry) => Status::tryFrom(strtolower((string) data_get($entry, 'status'))));
+        // a status the package does not know (LHDN documents only the four) is not taken as a
+        // match: logged, and the document is treated like one LHDN does not hold. A resend then
+        // reuses the issue time (under REUSE_MINUTES), so DV302 still catches a real copy.
+        $matches = $matches->filter(function ($entry) {
+            if (Status::tryFrom(strtolower((string) data_get($entry, 'status')))) return true;
 
-        if ($statuses->contains(null)) return $decision;
+            \Illuminate\Support\Facades\Log::warning('MyInvois: a recent document with an unknown status was not taken as a match.', [
+                'document_uuid' => data_get($entry, 'uuid'),
+                'status' => data_get($entry, 'status'),
+            ]);
+
+            return false;
+        })->values();
+
+        $statuses = $matches->map(fn ($entry) => Status::from(strtolower((string) data_get($entry, 'status'))));
 
         $live = $matches->filter(fn ($entry, $i) => $statuses[$i]->is(Status::SUBMITTED, Status::VALID));
 
@@ -325,23 +352,27 @@ class SubmitAttempts
         return ['action' => 'not_found', 'live' => false, 'uid' => null, 'entry' => null, 'reason' => null];
     }
 
-    protected function apply(array $decision, Collection $group, Collection $local) : void
+    /**
+     * Write a decision's rows and return how to close its attempts (run after the commit).
+     */
+    protected function apply(array $decision, Collection $group, Collection $local) : \Closure
     {
+        $outcome = $decision['live'] ? MyinvoisSubmitAttempt::ADOPTED : MyinvoisSubmitAttempt::FOUND_INVALID;
+
         if ($decision['action'] === 'link') {
             $this->link($local, $group);
-            $this->closeGroup($group, $decision['live'] ? MyinvoisSubmitAttempt::ADOPTED : MyinvoisSubmitAttempt::FOUND_INVALID, $local->first());
+            $row = $local->first();
 
-            return;
+            return fn () => $this->closeGroup($group, $outcome, $row);
         }
 
         if ($decision['action'] === 'adopt') {
-            $rows = $this->adopt($group, $decision['entry']);
-            $this->closeGroup($group, $decision['live'] ? MyinvoisSubmitAttempt::ADOPTED : MyinvoisSubmitAttempt::FOUND_INVALID, $rows->first());
+            $row = $this->adopt($group, $decision['entry'])->first();
 
-            return;
+            return fn () => $this->closeGroup($group, $outcome, $row);
         }
 
-        $this->closeGroup($group, MyinvoisSubmitAttempt::NOT_FOUND);
+        return fn () => $this->closeGroup($group, MyinvoisSubmitAttempt::NOT_FOUND);
     }
 
     /**
@@ -415,10 +446,11 @@ class SubmitAttempts
             foreach ($byNumber as $number => $group) {
                 $issued = $group->first()->issued_at ? Carbon::parse($group->first()->issued_at) : null;
 
-                // an attempt without an issue time cannot be matched: never guess
-                $results[(string) $number] = $issued === null ? null : $entries
+                // without an issue time (a document built without one) the number alone, in the
+                // attempt's window, has to do
+                $results[(string) $number] = $entries
                     ->filter(fn ($entry) => (string) data_get($entry, 'internalId') === (string) $number
-                        && $this->sameInstant(data_get($entry, 'dateTimeIssued'), $issued))
+                        && ($issued === null || $this->sameInstant(data_get($entry, 'dateTimeIssued'), $issued)))
                     ->values();
             }
         }
@@ -569,7 +601,9 @@ class SubmitAttempts
         try {
             $value = data_get($entry, 'dateTimeReceived');
 
-            return is_string($value) && $value !== '' ? Carbon::parse($value) : now();
+            // in the app's timezone: Eloquent stores a date as its wall-clock time, so a UTC
+            // instance would be read back hours off in a non-UTC app
+            return is_string($value) && $value !== '' ? Carbon::parse($value)->setTimezone(now()->getTimezone()) : now();
         }
         catch (\Throwable) {
             return now();

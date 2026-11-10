@@ -61,14 +61,15 @@ class MyinvoisUnavailableException extends MyinvoisException
     }
 
     /**
-     * A timeout / dropped connection / 5xx on an API call may have been processed anyway,
-     * so it is ambiguous. A failed token request or a 429 definitely was not.
+     * A timeout / dropped connection / 5xx (or a 408 on the submission POST) on an API call
+     * may have been processed anyway, so it is ambiguous. A failed token request or a 429
+     * definitely was not.
      */
     public function mayHaveReachedMyinvois() : bool
     {
         if ($this->endpoint !== null && str_contains($this->endpoint, '/connect/token')) return false;
 
-        return $this->status === null || $this->status >= 500;
+        return $this->status === null || $this->status === 408 || $this->status >= 500;
     }
 
     /**

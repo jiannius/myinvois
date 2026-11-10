@@ -1104,6 +1104,12 @@ class Myinvois
                 $this->beforeSend = null;
             }
 
+            // a 408 on the POST: the gateway gave up waiting, LHDN may still have the batch.
+            // Ambiguous like a timeout: the lock and the attempts are kept.
+            if ($api->status() === 408) {
+                throw MyinvoisUnavailableException::fromResponse($api, $this->getEndpoint('documentsubmissions'), 'MyInvois did not answer in time (HTTP 408). The submission may still have reached MyInvois.');
+            }
+
             // accepted by LHDN: from here a failure to save the rows must not free the lock
             if (data_get($api->json(), 'acceptedDocuments')) $keepLock = true;
 

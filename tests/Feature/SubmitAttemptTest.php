@@ -932,10 +932,13 @@ class SubmitAttemptTest extends TestCase
             $order = Order::create();
             $this->timedOut($order);
             $this->travel(6)->minutes();
-            $this->recent = fn () => $this->recentPage([$this->entry()]);
 
-            $this->resubmit($order);
+            // the fixture's issue time is now read as Malaysian time: sent as 09:30:00+08:00
+            $this->recent = fn () => $this->recentPage([$this->entry(['dateTimeIssued' => '2026-01-15T01:30:00Z'])]);
 
+            $e = $this->resubmit($order);
+
+            $this->assertSame(MyinvoisPendingAttemptException::RECOVERED, $e->getReason(), $e->getMessage());
             $this->assertSame('2026-11-10 10:00:05', MyinvoisDocument::sole()->created_at->utc()->toDateTimeString());
         }
         finally {

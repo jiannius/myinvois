@@ -300,13 +300,13 @@ A submission can reach LHDN without anyone recording it. The POST times out afte
 
 With `forParents()` or `queueSubmission()`, the package records a **submit attempt** (table `myinvois_submit_attempts`, run the migrations) per document and parent right before the POST leaves.
 
-- **Closed** once LHDN answers definitely: rows saved, `rejectedDocuments`, a whole-submission 4xx (except 408), or a token / 401 / 403 / 429 failure.
-- **Left pending** after a timeout, a 5xx, a 408 or a dead process.
+- **Closed** once LHDN answers definitely: rows saved, `rejectedDocuments`, a whole-submission 4xx, or a token / 401 / 403 / 429 failure.
+- **Left pending** after a timeout, a 5xx, a 408 or a dead process. A 408 on the submission POST is thrown as an ambiguous `MyinvoisUnavailableException` (`mayHaveReachedMyinvois()` is true), like a timeout.
 
 The next submission of that parent looks the document up before sending anything:
 
 1. **Local first.** An unlinked `myinvois_documents` row of that number, in that environment, saved since the attempt, is linked to the parent.
-2. **Then LHDN.** It calls `documents/recent` once per document type for the whole batch (`InvoiceDirection=Sent`, a submission window from 5 minutes before the first attempt to 30 minutes after the last), reading up to 5 pages of 100. A match is the same `internalId` and the exact same `dateTimeIssued`. When a resend reused the issue time, the window starts at the first attempt that sent it, in case the original landed late.
+2. **Then LHDN.** It calls `documents/recent` once per document type for the whole batch (`InvoiceDirection=Sent`, a submission window from 5 minutes before the first attempt to 30 minutes after the last), reading up to 5 pages of 100. A match is the same `internalId` and the exact same `dateTimeIssued` (the number alone, for a document sent without an issue time). An entry whose status the package does not know is logged and not taken as a match. When a resend reused the issue time, the window starts at the first attempt that sent it, in case the original landed late.
 
 Every document of the batch is decided before anything is written. If any document is refused, the whole call is refused and nothing changes.
 
@@ -321,6 +321,8 @@ Every document of the batch is decided before anything is written. If any docume
 
 Every refusal is a `MyinvoisPendingAttemptException`, a subclass of `MyinvoisInFlightException`, thrown before anything is sent. `getReason()` is one of `still_checking`, `lookup_failed`, `multiple_matches` or `recovered`; `getDocumentNumbers()` / `getParentReferences()` say which, and for `still_checking` `getRetryAfter()` gives the seconds until the lookup can decide. A rate-limit, authentication or permission failure during the lookup is thrown as itself.
 
+If the queued job restored part of a batch and must retry the rest (a 429 on the POST, say), the retry does not send the restored documents again.
+
 The queued job waits instead of failing: on `still_checking` it releases itself until the attempt is 10 minutes old, and on `lookup_failed` it retries after 30, 60 and 120 seconds. Only `multiple_matches`, or a lookup still failing after those retries, fires `SubmissionFailed` with reason `pending`.
 
 **Ask before editing.** `Myinvois::hasPendingAttempt($parent)` (or `$parent->hasPendingMyinvoisAttempt()` from the trait) is `true` while an attempt is pending in the parent's environment. Lock edits and voids meanwhile: the next submission resolves it.
@@ -330,6 +332,7 @@ Notes:
 - A plain `submitDocuments()` without parents records no attempt.
 - Don't call `submitDocuments()` inside a database transaction you might roll back: the attempt row would roll back with it. If you must, set `services.myinvois.attempts_connection` to a second connection to the same database, so attempts are written outside your transaction.
 - `MyinvoisFake` records no attempts (it cannot time out).
+- The lookup has not yet been run against LHDN (preprod included); see `docs/lhdn-references.md` for the assumptions it rests on.
 
 ## Status sync
 
