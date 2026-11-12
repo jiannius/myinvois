@@ -180,7 +180,7 @@ class Sale extends Model
 The trait exposes:
 
 - `myinvoisDocuments()` / `preprodMyinvoisDocuments()` — `morphMany` to all docs.
-- `latestMyinvoisDocument()` / `preprodLatestMyinvoisDocument()` — `morphOne` to the most recent.
+- `latestMyinvoisDocument()` / `preprodLatestMyinvoisDocument()` — `morphOne` to the most recent doc within its own environment (a newer row from the other environment does not hide it).
 - `isSubmittedToMyinvois(submitted: true, preprod: false)` — true when the latest doc is `submitted` or `valid`.
 - `scopeWithSubmittedMyinvoisDocument(submitted: true, preprod: false)` — eloquent scope for queries.
 - `getMyinvoisValidationLink(preprod: false)` — public LHDN share URL for the latest doc.
