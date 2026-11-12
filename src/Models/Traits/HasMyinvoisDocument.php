@@ -51,13 +51,11 @@ trait HasMyinvoisDocument
     }
 
     /**
-     * Get the latest myinvois document
+     * Get the latest myinvois document (production: is_preprod false or null)
      */
     public function latestMyinvoisDocument() : MorphOne
     {
-        return $this->morphOne(MyinvoisDocument::$useModel, 'parent')->where(fn ($q) => $q
-            ->where('is_preprod', false)->orWhereNull('is_preprod')
-        )->latestOfMany();
+        return $this->latestMyinvoisDocumentIn(false);
     }
 
     /**
@@ -65,9 +63,27 @@ trait HasMyinvoisDocument
      */
     public function preprodLatestMyinvoisDocument() : MorphOne
     {
-        return $this->morphOne(MyinvoisDocument::$useModel, 'parent')
-            ->where('is_preprod', true)
-            ->latestOfMany();
+        return $this->latestMyinvoisDocumentIn(true);
+    }
+
+    /**
+     * The latest document within one environment. The environment filter goes on the
+     * relation and inside the max(id) subquery of ofMany(): latestOfMany() alone builds
+     * a subquery over both environments, so a newer row from the other environment
+     * would win the max and then be dropped by the outer filter, hiding the current one.
+     */
+    private function latestMyinvoisDocumentIn(bool $preprod) : MorphOne
+    {
+        $inEnvironment = fn ($query) => $preprod
+            ? $query->where('is_preprod', true)
+            : $query->where(fn ($q) => $q->where('is_preprod', false)->orWhereNull('is_preprod'));
+
+        return $inEnvironment($this->morphOne(MyinvoisDocument::$useModel, 'parent'))
+            ->ofMany(
+                ['id' => 'max'],
+                $inEnvironment,
+                $preprod ? 'preprodLatestMyinvoisDocument' : 'latestMyinvoisDocument',
+            );
     }
 
     /**

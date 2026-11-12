@@ -156,8 +156,8 @@ class MyinvoisDocumentObserver
     /**
      * Check if the document is the parent's latest submission for its
      * environment. Mirrors HasMyinvoisDocument::latestMyinvoisDocument() /
-     * preprodLatestMyinvoisDocument(): latestOfMany() on the ULID primary key
-     * (highest id wins), prod being is_preprod false OR null, preprod being
+     * preprodLatestMyinvoisDocument(): the ULID primary key (highest id wins) within
+     * the environment, prod being is_preprod false OR null, preprod being
      * is_preprod true. Honours MyinvoisDocument::$useModel.
      */
     protected function isLatestSubmission($document) : bool

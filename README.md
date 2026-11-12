@@ -617,7 +617,7 @@ The trait adds:
 
 - `myinvoisDocuments()` — `MorphMany` for non-preprod docs
 - `preprodMyinvoisDocuments()` — `MorphMany` for preprod docs
-- `latestMyinvoisDocument()` / `preprodLatestMyinvoisDocument()` — `MorphOne` (via `latestOfMany`)
+- `latestMyinvoisDocument()` / `preprodLatestMyinvoisDocument()` — `MorphOne` to the latest row within its own environment (production: `is_preprod` false or null; preprod: true), so a newer row from the other environment never hides it
 - `isSubmittedToMyinvois($submitted = true, $preprod = false)` — boolean check
 - `hasPendingMyinvoisAttempt(?bool $preprod = null)` — an earlier submission may have reached LHDN unrecorded; lock edits and voids while true
 - `releasePendingMyinvoisAttempts(?bool $preprod = null, array $meta = [])` — close those attempts by hand after checking the MyInvois portal; returns the count
